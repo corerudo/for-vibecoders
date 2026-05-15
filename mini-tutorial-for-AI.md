@@ -1,12 +1,12 @@
 если нужно изучи:
-[ios исходники telegram](https://github.com/TelegramMessenger/Telegram-iOS)
-[android исходники telegram](https://github.com/DrKLO/Telegram)
-[исходники ExteraGram 12.5.1](https://github.com/Podyshka1/extera-full-decompiled)
-[документацию для плагинов ExteraGram для 12.5.1+](https://plugins.exteragram.app/docs)
-Android API
-[zwylib документацию](https://zwylib-docs.vercel.app)
-python документации
-Chaquopy v16 и его документации 
+[ios исходники telegram](https://github.com/TelegramMessenger/Telegram-iOS),
+[android исходники telegram](https://github.com/DrKLO/Telegram),
+[исходники ExteraGram 12.5.1](https://github.com/Podyshka1/extera-full-decompiled),
+[документацию для плагинов ExteraGram для 12.5.1+](https://plugins.exteragram.app/docs),
+Android API,
+[zwylib документацию](https://zwylib-docs.vercel.app),
+python документации,
+Chaquopy v16 и его документации
 
 #уточнения, они обязательны:
 пиши код без #
