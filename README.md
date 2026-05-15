@@ -21,7 +21,7 @@ you can also hit me up on tg ([@jaxbastard](https://t.me/jaxbastard)) and i'll a
 | `plugins/` | исходники плагинов в виде `.plugin` файлов | plugin source files as `.plugin` files |
 | `mini-tutorial-for-AI.md` | короткий гайд для AI-ассистентов по разработке плагинов | short guide for AI assistants on plugin development |
 | `plugins-index.md` | список имеющихся плагинов и анализов | all the plugins and analyses we’ve got |
-| repo-vs-context7.md | почему репо + нейронка лучше context7 для разработки плагинов | why repo + AI beats context7 for plugin development |
+| `repo-vs-context7.md` | почему репо + нейронка лучше context7 для разработки плагинов | why repo + AI beats context7 for plugin development |
 
 ---
 
