@@ -30,7 +30,7 @@ RU:
 - [документация ExteraGram plugins](https://plugins.exteragram.app/docs) — официальная дока по plugin API
 - [канал с плагинами](https://t.me/jxbplug) — канал с плагинами. владелец: [@jaxbastard](https://t.me/jaxbastard)
 - [ExteraGram 12.5.1](https://github.com/Podyshka1/extera-full-decompiled) — содержит декомпилированный ExteraGram 12.5.1 через jadx
-- 
+ 
 EN:
 - [Telegram for Android source](https://github.com/DrKLO/Telegram/tree/009e97356f966bb81eceba113d210230bf383122) — base for understanding internals
 - [ExteraGram plugins docs](https://plugins.exteragram.app/docs) — official plugin API documentation
