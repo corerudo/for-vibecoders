@@ -28,12 +28,12 @@ you can also hit me up on tg ([@jaxbastard](https://t.me/jaxbastard)) and i'll a
 RU:
 - [исходники Telegram для Android](https://github.com/DrKLO/Telegram/tree/009e97356f966bb81eceba113d210230bf383122) — база для понимания внутренностей
 - [документация ExteraGram plugins](https://plugins.exteragram.app/docs) — официальная дока по plugin API
-- [канал с плагинами](https://t.me/jxbplug) — [@jaxbastard](https://t.me/jaxbastard)
+- [канал с плагинами](https://t.me/jxbplug) — канал с плагинами. владелец: [@jaxbastard](https://t.me/jaxbastard)
 
 EN:
 - [Telegram for Android source](https://github.com/DrKLO/Telegram/tree/009e97356f966bb81eceba113d210230bf383122) — base for understanding internals
 - [ExteraGram plugins docs](https://plugins.exteragram.app/docs) — official plugin API documentation
-- [plugins channel](https://t.me/jxbplug) — [@jaxbastard](https://t.me/jaxbastard)
+- [plugins channel](https://t.me/jxbplug) — channel with plugins. owner: [@jaxbastard](https://t.me/jaxbastard)
 
 ---
 
