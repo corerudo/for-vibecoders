@@ -19,7 +19,7 @@ you can also hit me up on tg ([@jaxbastard](https://t.me/jaxbastard)) and i'll a
 |---|---|---|
 | `analyzes/` | детальные разборы плагинов — как работает каждый нюанс | detailed plugin breakdowns — how every nuance works |
 | `plugins/` | исходники плагинов в виде `.plugin` файлов | plugin source files as `.plugin` files |
-| `mini-tutorial for AI` | короткий гайд для AI-ассистентов по разработке плагинов | short guide for AI assistants on plugin development |
+| `mini-tutorial-for-AI.md` | короткий гайд для AI-ассистентов по разработке плагинов | short guide for AI assistants on plugin development |
 
 ---
 
