@@ -2,7 +2,7 @@
 
 RU:
 этот репозиторий создан специально для людей, что хотят вайбкодингом делать плагины для **ExteraGram 12.5.1+ и AyuGram на его основе**
-репо содержит в себе анализы моих плагинов, сами файлы плагинов, описания где что работает, ссылки на полезные источки и т.п.
+репо содержит в себе анализы моих плагинов, сами файлы плагинов, описания где что работает, ссылки на полезные источники и т.п.
 также вы можете написать мне в тг ([@jaxbastard](https://t.me/jaxbastard)), чтобы я добавил ваш плагин с его анализом
 
 EN:
@@ -35,7 +35,7 @@ EN:
 - [Telegram for Android source](https://github.com/DrKLO/Telegram/tree/009e97356f966bb81eceba113d210230bf383122) — base for understanding internals
 - [ExteraGram plugins docs](https://plugins.exteragram.app/docs) — official plugin API documentation
 - [plugins channel](https://t.me/jxbplug) — channel with plugins. owner: [@jaxbastard](https://t.me/jaxbastard)
-- [ExteraGram 12.5.1](https://github.com/Podyshka1/extera-full-decompiled) — contains decompiled externagram 12.5.1 via jadx
+- [ExteraGram 12.5.1](https://github.com/Podyshka1/extera-full-decompiled) — contains decompiled ExteraGram 12.5.1 via jadx
 
 ---
 
