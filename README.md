@@ -15,7 +15,7 @@ you can also hit me up on tg ([@jaxbastard](https://t.me/jaxbastard)) and i'll a
 
 ## 📁 RU: структура / EN: structure
 
-| папка / folder | RU: что внутри | EN: what's inside |
+| папка, файл / folder, file | RU: что внутри | EN: what's inside |
 |---|---|---|
 | `analyzes/` | детальные разборы плагинов — как работает каждый нюанс | detailed plugin breakdowns — how every nuance works |
 | `plugins/` | исходники плагинов в виде `.plugin` файлов | plugin source files as `.plugin` files |
