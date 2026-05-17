@@ -2,7 +2,7 @@ __id__ = "LodraBu"
 __name__ = "плагин выйти (в окно)"
 __description__ = "добавляет в дравер профиля кнопку выйти (в окно)"
 __icon__ = "PixelAnimeGirls/28"
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __author__ = "@jaxbastard"
 __min_version__ = "12.5.1"
 
@@ -34,10 +34,21 @@ class CreateMenuHook(MethodHook):
 
         context = activity.getContext()
         pkg = context.getPackageName()
-        icon_id = context.getResources().getIdentifier(
-            "msg_leave_solar", "drawable", pkg
-        )
-        otherItem.addSubItem(LOGOUT_ITEM_ID, icon_id, "выйти")
+        res = context.getResources()
+
+        icon_id = res.getIdentifier("msg_leave_solar", "drawable", pkg)
+
+        try:
+            LocaleController = jclass("org.telegram.messenger.LocaleController")
+            label = LocaleController.getString("LeaveChannel")
+        except Exception:
+            try:
+                str_id = res.getIdentifier("LeaveChannel", "string", pkg)
+                label = res.getString(str_id) if str_id != 0 else "выйти"
+            except Exception:
+                label = "Выход"
+
+        otherItem.addSubItem(LOGOUT_ITEM_ID, icon_id, label)
 
         Class = jclass("java.lang.Class")
         Integer = jclass("java.lang.Integer")
@@ -64,7 +75,7 @@ class LogoutDrawerButton(BasePlugin):
         )
         create_method.setAccessible(True)
         self.hook_method(create_method, CreateMenuHook(self))
-#сука плагин не вышел на сиксь севень строк(
+
     def on_logout_click(self, activity):
         LogoutActivity = find_class("org.telegram.ui.LogoutActivity")
         fragment = LogoutActivity()
