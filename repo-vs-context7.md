@@ -101,4 +101,4 @@ context7 — хороший инструмент, но для другой за�
 
 ---
 
-<sub>by @jaxbastard</sub>
+<sub>by [@jaxbastard](https://t.me/jaxbastard)</sub>
