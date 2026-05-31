@@ -2,7 +2,7 @@ __id__ = "LodraBu"
 __name__ = "плагин выйти (в окно)"
 __description__ = "добавляет в дравер профиля кнопку выйти (в окно)"
 __icon__ = "PixelAnimeGirls/28"
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 __author__ = "@jaxbastard"
 __min_version__ = "12.5.1"
 
@@ -28,6 +28,20 @@ class CreateMenuHook(MethodHook):
 
     def after_hooked_method(self, param):
         activity = param.thisObject
+
+        # Проверяем, что открыт собственный профиль
+        try:
+            UserConfig = jclass("org.telegram.messenger.UserConfig")
+            my_id = UserConfig.getInstance(
+                activity.getCurrentAccount()
+            ).getClientUserId()
+
+            userId = get_private_field(activity, "userId")
+            if userId != my_id:
+                return
+        except Exception:
+            return
+
         otherItem = get_private_field(activity, "otherItem")
         if otherItem is None:
             return
