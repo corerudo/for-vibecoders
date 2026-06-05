@@ -6,7 +6,7 @@
 
 ## Архитектура: как это работает в целом
 
-Плагин перехватывает отправку сообщений через `add_on_send_message_hook`. Если сообщение начинается с `.shm автор - название` — оригинальная отправка отменяется, запускается фоновая задача на `PLUGINS_QUEUE`. Она ищет трек на muztep.net, скачивает его, тегирует метаданными и отправляет как аудио с обложкой и caption.
+Плагин перехватывает отправку сообщений через `add_on_send_message_hook`. Если сообщение начинается с `.sm автор - название` — оригинальная отправка отменяется, запускается фоновая задача на `PLUGINS_QUEUE`. Она ищет трек на muztep.net, скачивает его, тегирует метаданными и отправляет как аудио с обложкой и caption.
 
 Центральная проблема всего плагина — правильно передать Telegram все данные трека (название, исполнитель, обложка, длительность), не потеряв их по пути.
 
@@ -16,7 +16,7 @@
 
 ### 1. `add_on_send_message_hook` — точка входа
 
-`on_send_message_hook` срабатывает до реальной отправки сообщения. `HookStrategy.CANCEL` полностью её блокирует — пользователь отправляет `.shm ...`, но это сообщение не уходит в чат.
+`on_send_message_hook` срабатывает до реальной отправки сообщения. `HookStrategy.CANCEL` полностью её блокирует — пользователь отправляет `.sm ...`, но это сообщение не уходит в чат.
 
 ```python
 result.strategy = HookStrategy.CANCEL
@@ -221,11 +221,194 @@ finally:
 ### 14. `_safe_name` — безопасное имя файла
 
 ```python
-name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name)[:120].strip()
+name = re.sub(r'[\\/:*?"<>| -]', "_", name)[:120].strip()
 return name or "track"
 ```
 
 Символы из запрещённого набора заменяются на `_`. Лимит 120 символов — защита от слишком длинных путей на Android. Fallback `"track"` — если после очистки строка пустая.
+
+---
+
+### 15. Маркер в тексте сообщения — идентификация без msg_id
+
+Главная проблема инлайна: нам нужно знать какое именно сообщение в чате «наше», чтобы навесить на него кнопки. Получить `msg_id` до отправки невозможно, а после — сообщение уже отрендерилось без кнопок.
+
+Решение — невидимый маркер в тексте:
+
+```python
+MARKER = "\u200d\u200c\u200c"
+```
+
+`\u200d` (zero-width joiner) и `\u200c` (zero-width non-joiner) — Unicode символы нулевой ширины, визуально невидимы в Telegram. Маркер добавляется в конец текста при отправке:
+
+```python
+text = "Результаты по запросу " + query + " " + MARKER
+run_on_ui_thread(lambda: send_text(peer_id, text))
+```
+
+При каждом рендере ячейки `_CellSetupHook` проверяет `messageText` на наличие маркера и применяет markup. Это работает при любом скролле, перезаходе в чат и перезапуске приложения — маркер хранится в самом сообщении на сервере.
+
+---
+
+### 16. `_CellSetupHook` — хук на `setMessageObject` с `before`
+
+Инлайн-кнопки у обычного (не локального) сообщения применяются через хук на `ChatMessageCell.setMessageObject`. Критично использовать `before_hooked_method`, а не `after`:
+
+```python
+class _CellSetupHook(MethodHook):
+    def before_hooked_method(self, param):
+        msg = param.args[0] if param.args else None
+        msg_text = str(getattr(msg, "messageText", "") or "")
+        if MARKER not in msg_text:
+            return
+        self._plugin._rebuild_markup(msg)
+```
+
+Причина: внутри `setMessageObject` вызывается `setMessageContent`, который читает `getInlineBotButtons()` → `inlineKeyboardSource`. Это поле заполняется `measureInlineBotButtons()` в конструкторе `MessageObject`. Если применить `reply_markup` в `after` — `setMessageContent` уже отработал с пустым `inlineKeyboardSource`. В `before` мы устанавливаем `reply_markup` + вызываем `measureInlineBotButtons()` до того, как `setMessageContent` читает кнопки.
+
+---
+
+### 17. `_rebuild_markup` — применение markup по сессии
+
+```python
+def _rebuild_markup(self, msg_obj):
+    dialog_id = int(msg_obj.getDialogId())
+    session = self._inline_sessions.get(dialog_id)
+    if session is None:
+        return
+    page = session.get("page", 1)
+    tracks = self._get_cached_page_tracks(session, page)
+    markup = self._build_markup(dialog_id, tracks, page)
+    msg_obj.messageOwner.reply_markup = markup
+    msg_obj.messageOwner.flags |= 64
+    try:
+        msg_obj.measureInlineBotButtons()
+    except Exception:
+        pass
+```
+
+`flags |= 64` — бит 6 (`1 << 6`) сигнализирует Telegram что у сообщения есть `reply_markup`. Без этого флага кнопки не рисуются даже при заполненном `reply_markup`.
+
+`_get_cached_page_tracks` берёт треки только из `meta_cache` — без сетевых запросов. При рендере хук вызывается синхронно в UI-потоке, сеть здесь недопустима.
+
+---
+
+### 18. `_InlineButtonHook` — перехват нажатий на кнопки
+
+Локальные кнопки не отправляют callback на сервер — нажатие перехватывается через хук на `ChatActivity$ChatMessageCellDelegate.didPressBotButton`:
+
+```python
+class _InlineButtonHook(MethodHook):
+    def before_hooked_method(self, param):
+        btn = param.args[1]
+        data = bytes(btn.data).decode("utf-8", errors="ignore")
+        if not data.startswith("muztep_"):
+            return
+        param.setResult(None)  # отменяем стандартную обработку
+        self._plugin._handle_inline_button(cell, data)
+```
+
+`param.setResult(None)` — отменяет стандартное поведение (попытку отправить callback боту). Данные кнопки кодируются в `btn.data` как UTF-8 байты с префиксом `muztep_`.
+
+---
+
+### 19. Структура данных кнопок
+
+```
+muztep_pick:{peer_id}:{idx}   — выбор трека (idx относительный, 0-3)
+muztep_page:{peer_id}:{page}  — смена страницы
+muztep_noop                       — заглушка (пустая кнопка, кнопка страницы)
+```
+
+`peer_id` в данных кнопки нужен потому что `_handle_inline_button` должен найти нужную сессию — `dialog_id` из `cell` может отличаться в групповых чатах.
+
+`idx` — относительный индекс (0–3) на текущей странице. Абсолютный индекс вычисляется в `_inline_pick`:
+
+```python
+abs_idx = (page - 1) * self.TRACKS_PER_PAGE + idx
+```
+
+---
+
+### 20. `_fetch_track_links` + `_fetch_page_tracks` — двухэтапный поиск
+
+При `.ism` сначала запрашивается только список ссылок (один запрос):
+
+```python
+def _fetch_track_links(self, query):
+    # GET /search/{query} → список {track_url, track_id}
+```
+
+Метаданные (artist, title, label для кнопки) запрашиваются лениво — только при открытии страницы, по 4 трека за раз через `_fetch_page_tracks`. Результат кешируется в `session["meta_cache"]` по `track_url`:
+
+```python
+cache[url] = {"artist": ..., "title": ..., "label": ..., "thumb_url": ...}
+```
+
+При повторном открытии той же страницы — данные берутся из кеша без сетевых запросов.
+
+---
+
+### 21. Сессии: хранение и восстановление
+
+Сессия хранит всё необходимое для восстановления инлайна после перезапуска приложения:
+
+```python
+{
+    "query": str,
+    "all_tracks": [{"track_url": ..., "track_id": ...}],
+    "meta_cache": {track_url: {"artist", "title", "label", "thumb_url"}},
+    "page": int
+}
+```
+
+Сессия сохраняется через `self.set_setting("session_{peer_id}", json)` — встроенное персистентное хранилище BasePlugin. Список всех peer_id хранится в `session_peers`.
+
+При `on_plugin_load` все сессии загружаются в память сразу:
+
+```python
+def _load_all_sessions(self):
+    peers_raw = self.get_setting("session_peers", None)
+    peer_ids = json.loads(peers_raw)
+    for peer_id in peer_ids:
+        saved = self._load_session(peer_id)
+        if saved:
+            self._inline_sessions[peer_id] = {...}
+```
+
+Это критично: если загружать сессию только при открытии чата (`onResume`), сообщения могут отрендериться раньше чем сессия попадёт в память — и `_rebuild_markup` не найдёт сессию.
+
+---
+
+### 22. `_refresh_message_ui` — обновление ячейки при смене страницы
+
+При нажатии `◀`/`▶` сессия обновляется в памяти и на диске, затем `_refresh_message_ui` триггерит перерендер:
+
+```python
+def _refresh_message_ui(self, msg_obj):
+    account = int(get_user_config().currentAccount)
+    dialog_id = msg_obj.getDialogId()
+    nc = NotificationCenter.getInstance(account)
+    nc.postNotificationName(228, dialog_id)
+```
+
+`NotificationCenter.postNotificationName(228, dialog_id)` — уведомление которое заставляет чат перерисовать сообщения. При следующем рендере `_CellSetupHook` применит новый markup из обновлённой сессии. Есть fallback через `notifyDataSetChanged` у RecyclerView.
+
+---
+
+### 23. Хуки через `find_class("java.lang.Class").forName(...)`
+
+Все хуки на Java-классы регистрируются через:
+
+```python
+Class = find_class("java.lang.Class")
+clazz = Class.forName("org.telegram.ui.Cells.ChatMessageCell")
+for method in clazz.getDeclaredMethods():
+    if method.getName() == "setMessageObject":
+        self.hook_method(method, _CellSetupHook(self))
+```
+
+`find_class(...)` возвращает Python-обёртку без `.getDeclaredMethods()`. Правильный путь — `find_class("java.lang.Class")` как точка входа, затем `Class.forName(имя_класса)` для получения настоящего Java `Class` объекта.
 
 ---
 
@@ -242,6 +425,8 @@ def on_send_message_hook(self, account, params):
     return result
 ```
 
+---
+
 ### Временный хук с гарантированным снятием
 
 ```python
@@ -251,6 +436,8 @@ try:
 finally:
     self._unhook_uri()
 ```
+
+---
 
 ### Ручная сборка аудио-документа с метаданными
 
@@ -268,6 +455,8 @@ document.attributes.add(attr)
 send_message({"peer": peer_id, "document": document, "path": path, "caption": caption})
 ```
 
+---
+
 ### Fallback-цепочка для ненадёжных операций
 
 ```python
@@ -282,14 +471,64 @@ except Exception:
 
 ---
 
-## Полная схема работы
+### Невидимый маркер для идентификации сообщения
+
+```python
+MARKER = "\u200d\u200c\u200c"
+text = "Какой-то текст " + MARKER
+send_text(peer_id, text)
+```
+
+В хуке на рендер:
+```python
+if MARKER not in str(getattr(msg, "messageText", "") or ""):
+    return
+```
+
+---
+
+### Локальный инлайн на обычном сообщении
+
+```python
+# в before_hooked_method на setMessageObject:
+msg_obj.messageOwner.reply_markup = markup      # TL_replyInlineMarkup
+msg_obj.messageOwner.flags |= 64               # бит 6 — есть reply_markup
+msg_obj.measureInlineBotButtons()              # пересчитать inlineKeyboardSource
+```
+
+---
+
+### Перехват нажатий на локальные кнопки
+
+```python
+# хук на ChatActivity$ChatMessageCellDelegate.didPressBotButton
+param.setResult(None)   # отменить стандартный callback
+data = bytes(btn.data).decode("utf-8", errors="ignore")
+```
+
+---
+
+### Загрузка всех персистентных данных в on_plugin_load
+
+```python
+def on_plugin_load(self):
+    self._sessions = {}
+    self._load_all_sessions()   # ДО установки хуков
+    # ...хуки...
+```
+
+Иначе первый рендер произойдёт до восстановления данных.
+
+---
+
+## Полная схема работы (.sm)
 
 ```
 on_plugin_load()
     └── add_on_send_message_hook()
 
 on_send_message_hook(account, params)
-    ├── проверка: starts_with(".shm ")
+    ├── проверка: starts_with(".sm ")
     ├── парсинг: artist_q, title_q из текста
     ├── run_on_queue → _search_and_send()
     └── HookStrategy.CANCEL
@@ -322,4 +561,54 @@ _search_and_send(artist_q, title_q, peer_id)
 
 on_plugin_unload()
     └── _unhook_uri()
+```
+
+---
+
+## Полная схема работы (.ism)
+
+```
+on_plugin_load()
+    ├── add_on_send_message_hook()
+    ├── _load_all_sessions()         ← загружаем все сессии до рендера
+    ├── _install_inline_button_hooks()
+    ├── _install_cell_setup_hook()
+    └── _install_chat_open_hook()
+
+on_send_message_hook: ".ism {query}"
+    ├── run_on_queue → _inline_search_start(query, peer_id)
+    └── HookStrategy.CANCEL
+
+_inline_search_start(query, peer_id)
+    ├── _fetch_track_links(query)    ← GET /search/{query}, список ссылок
+    ├── _fetch_page_tracks(session, 1) ← 4 запроса за метой страницы 1
+    ├── session → _inline_sessions[peer_id]
+    ├── _save_session()              ← персист на диск
+    └── send_text(peer_id, text + MARKER)
+
+_CellSetupHook.before_hooked_method  ← при каждом рендере ячейки
+    ├── проверка: MARKER in messageText
+    └── _rebuild_markup(msg_obj)
+            ├── session = _inline_sessions[dialog_id]
+            ├── tracks = _get_cached_page_tracks(session, page)
+            ├── markup = _build_markup(peer_id, tracks, page)
+            ├── msg_obj.messageOwner.reply_markup = markup
+            ├── msg_obj.messageOwner.flags |= 64
+            └── msg_obj.measureInlineBotButtons()
+
+_InlineButtonHook.before_hooked_method  ← при нажатии кнопки
+    ├── decode btn.data → "muztep_pick/page/noop:..."
+    ├── param.setResult(None)        ← отменяем стандартный callback
+    └── _handle_inline_button(cell, data)
+            ├── muztep_pick → _inline_pick(session_peer, idx, peer_id)
+            │       ├── abs_idx = (page-1)*4 + idx
+            │       ├── meta из кеша или _get_track_meta()
+            │       └── → _search_and_send логика (скачать + отправить)
+            └── muztep_page → _inline_page(session_peer, page, peer_id, msg_obj)
+                    ├── _fetch_page_tracks(session, page)  ← кеш или сеть
+                    ├── session["page"] = page
+                    ├── _save_session()
+                    └── _refresh_message_ui(msg_obj)
+                            └── NotificationCenter(228, dialog_id)
+                                    └── → _CellSetupHook срабатывает снова
 ```
