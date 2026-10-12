@@ -21,6 +21,7 @@ you can also hit me up on tg ([@jaxbastard](https://t.me/jaxbastard)) and i'll a
 | `plugins-index.md` | список имеющихся плагинов и анализов | all the plugins and analyses we've got |
 | `repo-plus-context7.md` | почему репо + context7 лучше использовать вместе | why repo + context7 work better together |
 | `context7.json` | настройки индексации репо в context7 | config for indexing this repo in context7 |
+| "for-agent/" | Skill для ИИ-агентов с правилами разработки плагинов, основными требованиями SDK и справочниками по API, хукам, Java-интеграции, UI и другим возможностям | Skill for AI agents with plugin development rules, SDK requirements, and API references for hooks, Java integration, UI, and other features |
 
 ---
 
