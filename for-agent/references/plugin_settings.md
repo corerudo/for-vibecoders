@@ -1,0 +1,285 @@
+# Plugin Settings
+
+How to build settings pages, sub-pages, and custom setting items.
+
+Implement `create_settings(self) -> List[Any]` on `BasePlugin`. The method returns a list of dataclass instances from `ui.settings`.
+
+## General example (most built-in setting types)
+
+```python
+from typing import Any, List
+
+from android.view import Gravity, View
+from android.widget import LinearLayout
+
+from org.telegram.messenger import AndroidUtilities, MediaDataController, UserConfig
+from org.telegram.ui.Components import BackupImageView, LayoutHelper, UItem
+
+from base_plugin import BasePlugin
+from ui.settings import (
+    Custom,
+    Divider,
+    EditText,
+    Header,
+    Input,
+    Selector,
+    SimpleSettingFactory,
+    Switch,
+    Text,
+)
+
+
+def create_sticker_view(context, list_view, current_account: int, class_guid: int, resources_provider):
+    main_layout = LinearLayout(context)
+    main_layout.setOrientation(LinearLayout.VERTICAL)
+    main_layout.setGravity(Gravity.CENTER)
+    main_layout.setPadding(
+        AndroidUtilities.dp(20), AndroidUtilities.dp(20), AndroidUtilities.dp(20), AndroidUtilities.dp(20),
+    )
+
+    image_view = BackupImageView(context)
+    image_view.setRoundRadius(AndroidUtilities.dp(45))
+
+    # The view is created here once. Do not bind item-specific data here yet.
+    main_layout.addView(image_view, LayoutHelper.createLinear(130, 130, Gravity.CENTER, 0, 0, 0, 16))
+    return main_layout
+
+
+def bind_sticker_view(view, item, divider: bool, adapter, list_view):
+    sticker_set_name = "CactusPlugins"
+    sticker_index = 0
+
+    # This runs when the view should display actual content.
+    MediaDataController.getInstance(UserConfig.selectedAccount).setPlaceholderImageByIndex(
+        view.getChildAt(0), sticker_set_name, sticker_index, "130_130",
+    )
+
+
+StickerSettingFactory = SimpleSettingFactory(
+    create_sticker_view, bind_sticker_view, is_clickable=False, is_shadow=False,
+)
+
+
+class MyPlugin(BasePlugin):
+    def _on_test_switch_change(self, new_value: bool):
+        self.log(f"Test switch changed to: {new_value}")
+
+    def _on_test_input_change(self, new_value: str):
+        self.log(f"Test input changed to: {new_value}")
+
+    def _on_test_selector_change(self, new_index: int):
+        self.log(f"Test selector changed to index: {new_index}")
+
+    def _on_text_click(self, view: View):
+        self.log("Text item clicked!")
+
+    def _create_sub_page(self) -> List[Any]:
+        return [
+            Header(text="This is a Sub-Page"),
+            Text(text="You can nest settings pages."),
+        ]
+
+    def create_settings(self) -> List[Any]:
+        return [
+            Header(text="General Settings"),
+            Switch(
+                key="test_switch_key", text="Test Switch", default=True,
+                subtext="This is a sample switch control.", icon="msg_settings",
+                on_change=self._on_test_switch_change, link_alias="test_switch",
+            ),
+            Selector(
+                key="test_selector_key", text="Test Selector", default=1,
+                items=["Option A", "Option B", "Option C"], icon="msg_list",
+                on_change=self._on_test_selector_change,
+            ),
+            Input(
+                key="test_input_key", text="Test Input", default="Hello, World!",
+                subtext="A simple single-line text input.", icon="msg_text",
+                on_change=self._on_test_input_change,
+            ),
+            EditText(
+                key="multiline_key", hint="Enter multiple lines of text here...",
+                default="", multiline=True, max_length=1000,
+            ),
+            Divider(text="This is a divider with text."),
+            Text(
+                text="Click for Sub-Page", icon="msg_arrow_forward",
+                on_click=self._on_text_click, create_sub_fragment=self._create_sub_page,
+                link_alias="sub_page_link",
+            ),
+            Text(text="This is red text", icon="msg_error", red=True),
+            Divider(),
+            Header(text="Custom Controls"),
+            Custom(factory=StickerSettingFactory.instance.java),
+            Custom(item=UItem.asShadow("This is a custom UItem shadow.")),
+        ]
+```
+
+## Accessing and modifying settings
+
+```python
+is_enabled = self.get_setting("test_switch_key", False)
+
+current_value = self.get_setting("test_switch_key", False)
+self.set_setting("test_switch_key", not current_value)
+
+# If changing one setting should rebuild the whole page, reload:
+self.set_setting("main_option", "A", reload_settings=True)
+```
+
+Export/import all settings:
+
+```python
+all_my_settings = self.export_settings()
+
+new_settings = {"test_switch_key": False, "test_input_key": "New Value"}
+self.import_settings(new_settings)  # reloads UI by default
+self.import_settings(new_settings, reload_settings=False)  # skip reload for batch work
+```
+
+## Built-in setting types
+
+`Header`, `Divider`, `Switch`, `Selector`, `Input`, `Text`, `EditText`, `Custom` (from `ui.settings`).
+
+| Control | key | text | default | Other Important Parameters |
+|---|---|---|---|---|
+| Header | - | Required | - | text: section title |
+| Divider | - | - | - | text: optional caption shown on the divider |
+| Switch | Required | Required | Required (bool) | subtext, icon, on_change, on_long_click, link_alias |
+| Selector | Required | Required | Required (int) | items, icon, on_change, on_long_click, link_alias |
+| Input | Required | Required | optional str | subtext, icon, on_change, on_long_click, link_alias |
+| Text | - | Required | - | subtext, icon, accent, red, on_click, on_long_click, create_sub_fragment, link_alias |
+| EditText | Required | - | optional str | hint (required), multiline, max_length, mask, on_change |
+| Custom | - | - | - | item, view, factory, factory_args, on_click, on_long_click, create_sub_fragment, link_alias |
+
+### Parameter details
+
+| Parameter | Type | Description |
+|---|---|---|
+| key | str | Unique key for persisted settings. Used with get_setting()/set_setting(). |
+| text | str | Main visible text for the setting row. |
+| default | Any | Default value if never saved. |
+| subtext | str | Optional second line of text. |
+| icon | str | Drawable name, e.g. "msg_settings". |
+| on_change | Callable | Runs when the value changes; signature depends on control type. |
+| on_click | Callable | Runs when the row is clicked; usually receives the clicked View. |
+| on_long_click | Callable | Runs on long press. |
+| link_alias | str | Enables a copyable deeplink alias for the row. |
+| items | List[str] | Selector option labels. |
+| create_sub_fragment | Callable[[], List[Any]] | Builds a nested settings page when tapped. |
+| accent | bool | Accent coloring for Text. |
+| red | bool | Red coloring for Text. |
+| hint | str | Placeholder text for EditText. |
+| multiline | bool | Allow multiple lines in EditText. |
+| max_length | int | Max input length. |
+| mask | str | Regex-like input restriction for EditText. |
+| factory | CustomSetting.Factory | Java factory for advanced custom items. |
+| item | UItem | Prebuilt Telegram UItem instance. |
+| view | View | Plain Android View instance. |
+
+## Custom Settings
+
+`Custom` is the flexible entry point for rows that don't fit built-in controls. Three approaches:
+
+### 1. Provide an existing `UItem`
+
+Lightest solution when Telegram already has a suitable row type.
+
+```python
+from org.telegram.ui.Components import UItem
+from ui.settings import Custom
+
+setting = Custom(item=UItem.asShadow("This is a custom UItem shadow."))
+```
+
+### 2. Provide a ready Android `View`
+
+Useful for static/already-constructed views.
+
+```python
+from android.widget import TextView
+from ui.settings import Custom
+
+label = TextView(context)
+label.setText("Hello from a custom View")
+setting = Custom(view=label)
+```
+
+Best for simple one-off views. If the row needs recycling, binding, click handling, or per-item behavior, prefer a factory.
+
+### 3. `SimpleSettingFactory` (recommended high-level API)
+
+Internally creates a Java `CustomSetting.Factory`, handles binding, exposes Python callbacks.
+
+```python
+from android.view import Gravity
+from android.widget import LinearLayout, TextView
+
+from org.telegram.messenger import AndroidUtilities
+from org.telegram.ui.Components import LayoutHelper
+
+from ui.bulletin import BulletinHelper
+from ui.settings import Custom, SimpleSettingFactory
+
+
+def create_view(context, list_view, current_account: int, class_guid: int, resources_provider):
+    main_layout = LinearLayout(context)
+    main_layout.setOrientation(LinearLayout.VERTICAL)
+    main_layout.setGravity(Gravity.CENTER)
+    main_layout.setPadding(
+        AndroidUtilities.dp(20), AndroidUtilities.dp(20), AndroidUtilities.dp(20), AndroidUtilities.dp(20),
+    )
+
+    title = TextView(context)
+    title.setText("Tap me")
+    main_layout.addView(title, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT))
+    return main_layout
+
+
+def bind_view(view, item, divider: bool, adapter, list_view):
+    title = view.getChildAt(0)
+    title.setText("Tap me")
+
+
+def on_click(plugin, item, view):
+    BulletinHelper.show_info(f"Hello from {plugin.getName()}!")
+
+
+InteractiveRowFactory = SimpleSettingFactory(create_view, bind_view, is_clickable=True, on_click=on_click)
+
+setting = Custom(factory=InteractiveRowFactory.instance.java)
+```
+
+### Factory callbacks
+
+`SimpleSettingFactory(...)` supports: `create_view(context, list_view, current_account, class_guid, resources_provider) -> View`, `bind_view(view, item, divider, adapter, list_view) -> None`, `create_item(plugin, setting, args) -> UItem`, `on_click(plugin, item, view) -> None`, `on_long_click(plugin, item, view) -> bool`, `attached_view(list_view, view, item) -> None`, `equals(a, b) -> bool`, `content_equals(a, b) -> bool`.
+
+Constructor:
+
+```python
+SimpleSettingFactory(
+    create_view, bind_view,
+    is_clickable=False, is_shadow=False,
+    create_item=None, on_click=None, on_long_click=None,
+    attached_view=None, equals=None, content_equals=None,
+)
+```
+
+Notes:
+- `create_view(...)` builds the row view itself; `bind_view(...)` fills current data into it.
+- `is_clickable`/`is_shadow` are optimized Java-side flags used in hot paths.
+- If `create_item` is omitted, a default `UItem` is created.
+- If `equals`/`content_equals` are omitted, Telegram's default `UItem` comparison logic is used.
+
+### `SimpleSettingFactory` as a callable
+
+```python
+StickerFactory = SimpleSettingFactory(create_sticker_view, bind_sticker_view)
+setting = StickerFactory(link_alias="sticker_preview")
+# or with positional args (stored in factory_args):
+setting = StickerFactory("CactusPlugins", 0)
+```
+
+## Advanced Custom Factories
+
+If `SimpleSettingFactory` isn't enough (need a real Java subclass, custom Java fields, `super()` support, overload-specific behavior, MVEL-backed hot-path methods), use the Class Proxy system — see `class_proxy.md`.
