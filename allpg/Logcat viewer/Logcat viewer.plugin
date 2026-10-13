@@ -1,0 +1,305 @@
+import ctypes
+import os
+import re
+import threading
+import time
+
+from base_plugin import BasePlugin
+from android_utils import log
+from android.view import Gravity
+from android.widget import LinearLayout, ScrollView, TextView
+from android.graphics import Typeface
+from org.telegram.messenger import AndroidUtilities
+from org.telegram.ui.ActionBar import BottomSheet, Theme
+from client_utils import get_last_fragment
+from ui.settings import Header, Text, Divider, Input
+
+__id__ = "lvie"
+__name__ = "Logcat Viewer"
+__version__ = "1.1.0"
+__description__ = "Просмотр системного журнала Android"
+__author__ = "@jaxbastard"
+__icon__ = "autismbylidreron/0"
+__min_version__ = "12.5.1"
+
+# EMBEDDED_NATIVE_BEGIN
+_SO_ARM64 = (
+    "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"
+    "xMZf2v7f5ngUUw=="
+)
+# EMBEDDED_NATIVE_END
+
+_MAX_ROWS = 3000
+_LOCK = threading.RLock()
+_RECORDS = []
+_STOP = threading.Event()
+_READER = None
+_READER_THREAD = None
+_STATUS = "Нативный модуль не загружен"
+_LOG_RE = re.compile(r"^(?P<date>\d{2}-\d{2})\s+(?P<clock>\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(?P<pid>\d+)\s+(?P<tid>\d+)\s+(?P<level>[VDIWEAF])\s+(?P<tag>[^:]+):\s?(?P<message>.*)$")
+
+
+def _add_line(line):
+    line = str(line).rstrip("\r\n")
+    if not line:
+        return
+    now = time.time()
+    match = _LOG_RE.match(line)
+    if match:
+        data = match.groupdict()
+        tag = data["tag"].strip()
+        message = data["message"]
+        stamp = data["date"] + " " + data["clock"][:8].replace(":", "-")
+        pid = data["pid"]
+        tid = data["tid"]
+        level = data["level"]
+    else:
+        tag = "logcat"
+        message = line
+        stamp = time.strftime("%d-%m %H-%M-%S", time.localtime(now))
+        pid = "?"
+        tid = "?"
+        level = None
+    record = {"created": now, "id": tag, "name": tag, "tag": tag, "message": message, "full": line, "stamp": stamp, "pid": pid, "tid": tid, "level": level}
+    with _LOCK:
+        if _RECORDS and _RECORDS[-1]["full"] == line and now - _RECORDS[-1]["created"] < 1.0:
+            return
+        _RECORDS.append(record)
+        if len(_RECORDS) > _MAX_ROWS:
+            del _RECORDS[:-_MAX_ROWS]
+
+
+def _reader_loop():
+    global _STATUS
+    buffer = ctypes.create_string_buffer(65536)
+    while not _STOP.is_set():
+        try:
+            result = _READER.lv_read_line(buffer, len(buffer), 500)
+            if result > 0:
+                _add_line(buffer.value.decode("utf-8", "replace"))
+            elif result < 0:
+                _STATUS = "Нативный читатель остановился"
+                break
+        except Exception as exc:
+            _STATUS = "Ошибка чтения: " + str(exc)
+            log("lvie: ошибка чтения logcat: " + str(exc))
+            break
+    _STATUS = _STATUS if _STATUS != "Чтение logcat запущено" else "Чтение остановлено"
+
+
+def _extract_native():
+    import base64
+    import zlib
+
+    data = zlib.decompress(base64.b64decode(_SO_ARM64))
+    base = None
+
+    try:
+        ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
+        try:
+            base = str(ctx.getCodeCacheDir().getAbsolutePath())
+        except Exception:
+            base = str(ctx.getFilesDir().getAbsolutePath())
+    except Exception:
+        pass
+
+    if not base:
+        base = os.path.dirname(os.path.abspath(__file__))
+
+    folder = os.path.join(base, "logcat_viewer_native")
+    try:
+        from java.io import File
+        directory = File(folder)
+        if not directory.exists():
+            directory.mkdirs()
+        folder = str(directory.getAbsolutePath())
+    except Exception:
+        os.makedirs(folder, exist_ok=True)
+
+    path = os.path.join(folder, "liblogcat_reader.so")
+    try:
+        if os.path.getsize(path) == len(data):
+            return path
+    except OSError:
+        pass
+
+    with open(path, "wb") as output:
+        output.write(data)
+    return path
+
+
+def _start_reader():
+    global _READER, _READER_THREAD, _STATUS
+
+    if _READER_THREAD is not None and _READER_THREAD.is_alive():
+        return
+
+    try:
+        path = _extract_native()
+        _READER = ctypes.CDLL(path)
+
+        _READER.lv_start.restype = ctypes.c_int
+        _READER.lv_read_line.argtypes = [
+            ctypes.POINTER(ctypes.c_char),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        _READER.lv_read_line.restype = ctypes.c_int
+        _READER.lv_stop.restype = None
+
+        if _READER.lv_start() != 0:
+            _READER = None
+            _STATUS = "Не удалось запустить logcat. Доступ может быть ограничен Android."
+            log("lvie: " + _STATUS)
+            return
+
+        _STOP.clear()
+        _STATUS = "Чтение logcat запущено"
+        _READER_THREAD = threading.Thread(
+            target=_reader_loop,
+            name="LogcatViewerNative",
+            daemon=True,
+        )
+        _READER_THREAD.start()
+    except Exception as exc:
+        _READER = None
+        _STATUS = "Ошибка загрузки нативного модуля: " + str(exc)
+        log("lvie: " + _STATUS)
+
+def _stop_reader():
+    global _READER_THREAD, _READER
+    _STOP.set()
+    if _READER is not None:
+        try:
+            _READER.lv_stop()
+        except Exception:
+            pass
+    _READER_THREAD = None
+    _READER = None
+
+
+def _all_records():
+    with _LOCK:
+        return list(reversed(_RECORDS))
+
+
+class Plugin(BasePlugin):
+    def on_plugin_load(self):
+        log("lvie: загрузка плагина")
+        _start_reader()
+        log("lvie: запуск читателя logcat завершён; статус: " + _STATUS)
+
+    def on_plugin_unload(self):
+        log("lvie: выгрузка плагина")
+        _stop_reader()
+
+    def _refresh_logs(self, _view=None):
+        log("lvie: обновление списка logcat")
+        token = not bool(self.get_setting("_refresh_token", False))
+        self.set_setting("_refresh_token", token, reload_settings=True)
+
+    def _viewer(self):
+        query = str(self.get_setting("search", "") or "").strip().lower()
+        rows = [
+            Header(text="Журнал logcat"),
+            Input(key="search", text="Поиск по тегу или тексту", default=str(self.get_setting("search", "") or ""), icon="msg_search_solar", on_change=self._on_search),
+            Text(text="Обновить список", icon="msg_clear_recent_solar", accent=True, on_click=self._refresh_logs),
+        ]
+        records = _all_records()
+        if query:
+            records = [r for r in records if query in r["tag"].lower() or query in r["message"].lower() or query in r["full"].lower()]
+        if not records:
+            rows.extend([Divider(), Text(text="Записей пока нет. Проверь наличие нативного модуля и доступ Android к logcat.", icon="msg_info_solar")])
+            return rows
+        rows.append(Divider(text="Записей: %d" % len(records)))
+        for record in records:
+            meta = "%s · %s:%s · %s" % (record["stamp"], record["pid"], record["tid"], record["tag"])
+            if record.get("level"):
+                meta += " · " + record["level"]
+            rows.append(Text(text=record["message"] or record["tag"], subtext=meta, icon="msg_list_solar", on_click=lambda _view, item=record: self._show_record(item)))
+        return rows
+
+    def _on_search(self, value):
+        query = "" if value is None else str(value)
+        log("lvie: поиск logcat, запрос: " + query)
+        self.set_setting("search", query, reload_settings=True)
+
+    def _show_record(self, record):
+        fragment = get_last_fragment()
+        context = fragment.getParentActivity() if fragment is not None else None
+        if context is None:
+            return
+        root = LinearLayout(context)
+        root.setOrientation(LinearLayout.VERTICAL)
+        root.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(8), AndroidUtilities.dp(16), AndroidUtilities.dp(12))
+        heading = TextView(context)
+        heading.setText("%s · %s" % (record["tag"], record["stamp"]))
+        heading.setTextSize(16)
+        heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        heading.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+        root.addView(heading, LinearLayout.LayoutParams(-1, -2))
+        scroll = ScrollView(context)
+        body = TextView(context)
+        body.setText(record["full"])
+        body.setTextSize(13)
+        body.setTypeface(Typeface.MONOSPACE)
+        body.setTextIsSelectable(True)
+        body.setGravity(Gravity.LEFT | Gravity.TOP)
+        body.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+        body.setPadding(0, AndroidUtilities.dp(12), 0, AndroidUtilities.dp(20))
+        scroll.addView(body, ScrollView.LayoutParams(-1, -2))
+        root.addView(scroll, LinearLayout.LayoutParams(-1, AndroidUtilities.dp(420)))
+        builder = BottomSheet.Builder(context)
+        builder.setTitle("Запись журнала", True)
+        builder.setCustomView(root, Gravity.LEFT | Gravity.TOP)
+        builder.setApplyTopPadding(False)
+        builder.setApplyBottomPadding(True)
+        builder.show()
+
+    def create_settings(self):
+        return self._viewer()
+
+
+def create_plugin():
+    return Plugin()
