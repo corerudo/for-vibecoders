@@ -1,4 +1,4 @@
-# Анализ разработки плагина Logcat Viewer
+# Анализ разработки плагина Logcat viewer
 > Просмотр системного журнала Android внутри ExteraGram
 > Источники: исходный код `Logcat_Viewer.plugin` и встроенная нативная библиотека `liblogcat_reader.so`
 
