@@ -1,0 +1,1113 @@
+import traceback
+import threading
+
+from base_plugin import BasePlugin, MethodHook
+from ui.settings import Header, Switch, Selector
+from android_utils import log, run_on_ui_thread
+from hook_utils import find_class
+from client_utils import get_last_fragment
+from android.view import View, Gravity
+from org.telegram.messenger import AndroidUtilities
+from com.exteragram.messenger import ExteraConfig
+from java import jfloat, jclass
+from java.lang import Integer as JInteger
+
+__id__ = "aise"
+__name__ = "AisE"
+__version__ = "1.0.6-beta"
+__description__ = "Аватары в поле ввода и сообщениях\nСпасибо @skytr1xz (@sktrxdev) и @zwylair (@zwyPlugins) за подсказки"
+__author__ = "@jaxbastard"
+__icon__ = "HujnyaOtDzheksa2/5"
+__min_version__ = "12.10.6"
+
+_JAVA_CLASS_CACHE = {}
+_DIRECT_ACCESS_FAILURES = set()
+def _log_direct_access_failure(obj, name, exc):
+    try:
+        cls_name = str(obj.getClass().getName()) if obj is not None else 'None'
+    except Exception:
+        cls_name = type(obj).__name__ if obj is not None else 'None'
+    key = (cls_name, name)
+    if key not in _DIRECT_ACCESS_FAILURES:
+        _DIRECT_ACCESS_FAILURES.add(key)
+        log(f"[AisE][DIRECT-ACCESS-FAILED] {cls_name}.{name} via JA.JNGS: {exc}")
+
+def _find_class(name):
+    cached = _JAVA_CLASS_CACHE.get(name)
+    if cached is not None:
+        return cached
+    cls = find_class(name)
+    if cls is not None:
+        _JAVA_CLASS_CACHE[name] = cls
+    return cls
+
+def _client_user_id(account):
+    account = int(account)
+    cached = _CLIENT_IDS.get(account)
+    if cached is not None:
+        return cached
+    try:
+        value = int(_find_class('org.telegram.messenger.UserConfig').getInstance(account).getClientUserId())
+        if value:
+            _CLIENT_IDS[account] = value
+        return value
+    except Exception:
+        return None
+
+def _is_channel(dialog_id, account=0):
+    if dialog_id >= 0:
+        return False
+    key = (int(account), int(dialog_id))
+    cached = _CHANNEL_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        mc = _find_class('org.telegram.messenger.MessagesController').getInstance(account)
+        chat = mc.getChat(-dialog_id)
+        if chat is None:
+            return False
+        result = bool(getattr(chat, 'broadcast', False)) and not bool(getattr(chat, 'megagroup', False))
+        if len(_CHANNEL_CACHE) > 512:
+            _CHANNEL_CACHE.clear()
+        _CHANNEL_CACHE[key] = result
+        return result
+    except Exception:
+        return False
+
+def _mode_flags(plugin):
+    cached = getattr(plugin, '_aise_mode_flags', None)
+    if cached is not None:
+        return cached
+    return (bool(plugin.get_setting('avatar_v2_pg', False)), bool(plugin.get_setting('avatar_v3_pg', False)))
+
+_message_avatar_receivers = {}
+_message_avatar_receiver_owners = {}
+_message_avatar_receiver_users = {}
+_message_avatar_pin_fields = {}
+_own_message_avatar_cells = {}
+_clipped_parents = set()
+_CLIENT_IDS = {}
+_CHANNEL_CACHE = {}
+_CHAT_MESSAGE_CELL_CLASS = None
+_active_chat_list_view_id = None
+
+def _message_avatar_radius():
+    try:
+        return ExteraConfig.getAvatarCorners(42.0)
+    except Exception:
+        return AndroidUtilities.dp(21)
+
+def _message_avatar_user(account):
+    try:
+        user_config = _find_class('org.telegram.messenger.UserConfig').getInstance(account)
+        return _find_class('org.telegram.messenger.MessagesController').getInstance(account).getUser(
+            user_config.getClientUserId()
+        )
+    except Exception:
+        return None
+
+def _message_avatar_receiver(cell):
+    cell_hash = int(cell.hashCode())
+    if cell_hash not in _message_avatar_receivers:
+        IR = _find_class('org.telegram.messenger.ImageReceiver')
+        r = IR(cell)
+        r.setRoundRadius(_message_avatar_radius())
+        _message_avatar_receivers[cell_hash] = r
+    return _message_avatar_receivers[cell_hash]
+
+def _release_message_avatar_receiver(cell_hash):
+    _message_avatar_receiver_owners.pop(cell_hash, None)
+    _message_avatar_receiver_users.pop(cell_hash, None)
+    _own_message_avatar_cells.pop(cell_hash, None)
+    receiver = _message_avatar_receivers.pop(cell_hash, None)
+    if receiver is not None:
+        try:
+            receiver.clearImage()
+        except Exception:
+            pass
+
+def _clear_message_avatar_receivers():
+    for cell_hash in tuple(_message_avatar_receivers):
+        _release_message_avatar_receiver(cell_hash)
+    _own_message_avatar_cells.clear()
+
+def _message_avatar_is_pinned(cell, name):
+    try:
+        return bool(getattr(cell.JA.JNGS, name))
+    except Exception as exc:
+        _log_direct_access_failure(cell, name, exc)
+        return False
+
+def _should_show_own_message_avatar(plugin, msg, mode_flags=None):
+    if mode_flags is None:
+        v2, v3 = _mode_flags(plugin)
+    else:
+        v2, v3 = mode_flags
+    if not v2 and not v3:
+        return False
+    if msg is None or not msg.isOut():
+        return False
+    try:
+        owner = getattr(msg, 'messageOwner', None)
+        forwarded = getattr(owner, 'fwd_from', None) if owner is not None else None
+        if forwarded is not None and int(getattr(forwarded, 'channel_post', 0) or 0) != 0:
+            return False
+        dialog_id = msg.getDialogId()
+        account = int(getattr(msg, 'currentAccount', 0))
+        if _is_channel(dialog_id, account):
+            return False
+        client_id = _client_user_id(account)
+        if client_id is None or dialog_id == client_id:
+            return False
+    except Exception:
+        return False
+    return True
+
+class OwnMessageAvatarBindHook(MethodHook):
+    def __init__(self, plugin):
+        self._plugin = plugin
+
+    def after_hooked_method(self, param):
+        try:
+            cell = param.thisObject
+            cell_hash = int(cell.hashCode())
+            msg = cell.getMessageObject()
+            if msg is None:
+                _release_message_avatar_receiver(cell_hash)
+                return
+
+            mode_flags = _mode_flags(self._plugin)
+            show = _should_show_own_message_avatar(self._plugin, msg, mode_flags)
+            lp = cell.getLayoutParams()
+            if lp is not None and hasattr(lp, 'rightMargin'):
+                target = AndroidUtilities.dp(52) if show else 0
+                if lp.rightMargin != target:
+                    lp.rightMargin = target
+                    cell.setLayoutParams(lp)
+
+            if not show:
+                _release_message_avatar_receiver(cell_hash)
+                return
+
+            account = int(getattr(msg, 'currentAccount', 0))
+            _own_message_avatar_cells[cell_hash] = cell
+            me = _message_avatar_user(account)
+            if me is None:
+                return
+            try:
+                photo = getattr(getattr(me, 'photo', None), 'photo_id', 0)
+                user_key = (account, int(me.id), int(photo or 0))
+            except Exception:
+                user_key = (account, int(getattr(me, 'id', 0)), 0)
+            if _message_avatar_receiver_users.get(cell_hash) != user_key:
+                AD = _find_class('org.telegram.ui.Components.AvatarDrawable')
+                fallback = AD()
+                fallback.setInfo(me)
+                receiver = _message_avatar_receiver(cell)
+                receiver.setForUserOrChat(me, fallback)
+                _message_avatar_receiver_users[cell_hash] = user_key
+
+            try:
+                parent = cell.getParent()
+                if parent is not None:
+                    parent_hash = int(parent.hashCode())
+                    if parent_hash not in _clipped_parents:
+                        parent.setClipChildren(False)
+                        parent.setClipToPadding(False)
+                        _clipped_parents.add(parent_hash)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+class OwnMessageAvatarDrawHook(MethodHook):
+    def __init__(self, plugin):
+        self._plugin = plugin
+
+    def after_hooked_method(self, param):
+        try:
+            if not any(_mode_flags(self._plugin)):
+                return
+            rv = param.thisObject
+            rv_hash = int(rv.hashCode())
+
+            if _active_chat_list_view_id is None or rv_hash != _active_chat_list_view_id:
+                return
+            canvas = param.args[0]
+            size_px = AndroidUtilities.dp(42)
+            pad_px = AndroidUtilities.dp(8)
+            extra_px = AndroidUtilities.dp(1)
+            for cell_hash, child in tuple(_own_message_avatar_cells.items()):
+                try:
+                    parent = child.getParent()
+                    if parent != rv:
+                        _release_message_avatar_receiver(cell_hash)
+                        continue
+                    if _message_avatar_is_pinned(child, 'pinnedBottom'):
+                        continue
+                    receiver = _message_avatar_receivers.get(cell_hash)
+                    if receiver is None:
+                        continue
+                    left = jfloat(child.getX() + child.getWidth() + extra_px)
+                    top = jfloat(child.getY() + child.getHeight() - pad_px - size_px)
+                    receiver.setImageCoords(left, top, jfloat(size_px), jfloat(size_px))
+                    receiver.draw(canvas)
+                except Exception:
+
+                    pass
+        except Exception:
+            pass
+
+class AisEPlugin(BasePlugin):
+    def __init__(self):
+        super().__init__()
+        self._aise_active = False
+        for attr in (
+            '_avatar_hook', '_avatar_hook_2', '_avatar_hook_3',
+            '_update_bot_button_hook',
+            '_dialogs_share_hook', '_dialogs_share_hook_2', '_dialogs_share_hook_3', '_share_measure_hook',
+            '_cell_hook_1', '_cell_hook_2', '_cell_hook_3', '_cell_hook_4',
+            '_own_message_avatar_hook_1', '_own_message_avatar_hook_2', '_own_message_avatar_hook_3', '_own_message_avatar_hook_4',
+            '_avatar_measure_hook', '_emoji_params_hook', '_emoji_layout_hook', '_cleanup_callback',
+        ):
+            setattr(self, attr, None)
+
+    def on_plugin_load(self):
+        self._aise_active = True
+        if self.get_setting("avatar_mode_sel_pg", None) is None:
+            self.set_setting("avatar_mode_sel_pg", 2)
+            self.set_setting("avatar_v2_pg", False)
+            self.set_setting("avatar_v3_pg", True)
+        if self.get_setting("interlocutor_avatar_pg", None) is None:
+            self.set_setting("interlocutor_avatar_pg", True)
+        self._aise_mode_flags = (
+            bool(self.get_setting("avatar_v2_pg", False)),
+            bool(self.get_setting("avatar_v3_pg", False)),
+        )
+        self._aise_interlocutor_enabled = bool(self.get_setting("interlocutor_avatar_pg", True))
+        try:
+            self._install_avatar_hooks()
+            log("[AisE] Хуки аватаров применены")
+        except Exception:
+            log("[AisE][ERROR] Ошибка при загрузке плагина:\n" + traceback.format_exc())
+
+    def _install_avatar_hooks(self):
+        try:
+            plugin_self = self
+
+            def get_field(obj, name):
+                if obj is None:
+                    return None
+                try:
+                    return getattr(obj.JA.JNGS, name)
+                except Exception as exc:
+                    _log_direct_access_failure(obj, name, exc)
+                    return None
+
+            def get_avatar_radius():
+                try:
+                    return ExteraConfig.getAvatarCorners(36.0)
+                except Exception:
+                    return AndroidUtilities.dp(18)
+
+            def get_account(obj):
+                value = get_field(obj, 'currentAccount')
+                if value is None:
+                    return None
+                try:
+                    return int(value)
+                except Exception as exc:
+                    _log_direct_access_failure(obj, 'currentAccount', exc)
+                    return None
+
+            def get_account_user(account):
+                return _message_avatar_user(account)
+
+            def get_account_chat(account, dialog_id):
+                return _find_class('org.telegram.messenger.MessagesController').getInstance(account).getChat(-dialog_id)
+
+            pending_avatar_containers = set()
+            original_input_margins = {}
+            avatar_views_by_container = {}
+
+            def _find_aise_avatar(container):
+                if container is None:
+                    return None
+                key = int(container.hashCode())
+                cached = avatar_views_by_container.get(key)
+                if cached is not None:
+                    try:
+                        if cached.getParent() == container and cached.getTag() == 'aise_avatar':
+                            return cached
+                    except Exception:
+                        pass
+                    avatar_views_by_container.pop(key, None)
+                try:
+                    found = container.findViewWithTag('aise_avatar')
+                    if found is not None:
+                        avatar_views_by_container[key] = found
+                    return found
+                except Exception:
+                    return None
+
+            def has_sender_select_view(enter_view):
+                if enter_view is None:
+                    return False
+                sender = None
+                try:
+                    sender = getattr(enter_view, 'senderSelectView')
+                except Exception:
+                    try:
+                        sender = getattr(enter_view.JA.JNGS, 'senderSelectView')
+                    except Exception:
+                        return False
+                try:
+                    return sender is not None and sender.getVisibility() == View.VISIBLE
+                except Exception:
+                    return False
+
+            def has_visible_bot_commands_button(enter_view):
+                try:
+                    button = get_field(enter_view, 'botCommandsMenuButton')
+                    return button is not None and button.getVisibility() == View.VISIBLE
+                except Exception:
+                    return False
+
+            def input_modification_block_reason(enter_view):
+                if has_sender_select_view(enter_view):
+                    return 'sender_select'
+                if has_visible_bot_commands_button(enter_view):
+                    return 'bot_button'
+                return None
+
+            def can_modify_input(enter_view):
+                return input_modification_block_reason(enter_view) is None
+
+            def apply_avatar_input_layout(enter_view, enabled, check_guard=True):
+                try:
+
+                    if check_guard:
+                        block_reason = input_modification_block_reason(enter_view)
+                        if block_reason == 'sender_select' or (enabled and block_reason == 'bot_button'):
+                            return
+                    key = int(enter_view.hashCode())
+                    emoji_button = get_field(enter_view, 'emojiButton')
+                    edit_text = get_field(enter_view, 'messageEditText')
+                    if key not in original_input_margins:
+                        emoji_params = emoji_button.getLayoutParams() if emoji_button else None
+                        edit_params = edit_text.getLayoutParams() if edit_text else None
+                        original_input_margins[key] = (
+                            getattr(emoji_params, 'leftMargin', 0) if emoji_params else 0,
+                            getattr(edit_params, 'leftMargin', 0) if edit_params else 0,
+                            getattr(edit_params, 'rightMargin', 0) if edit_params else 0,
+                        )
+                    original_emoji_left, original_edit_left, original_edit_right = original_input_margins[key]
+                    if emoji_button is not None:
+                        params = emoji_button.getLayoutParams()
+                        if params is not None:
+                            target_emoji_left = AndroidUtilities.dp(43) if enabled else original_emoji_left
+                            if params.leftMargin != target_emoji_left:
+                                params.leftMargin = target_emoji_left
+                                emoji_button.setLayoutParams(params)
+                    if edit_text is not None:
+                        params = edit_text.getLayoutParams()
+                        if params is not None:
+                            target_edit_left = AndroidUtilities.dp(98) if enabled else original_edit_left
+                            target_edit_right = AndroidUtilities.dp(48) if enabled else original_edit_right
+                            if params.leftMargin != target_edit_left or params.rightMargin != target_edit_right:
+                                params.leftMargin = target_edit_left
+                                params.rightMargin = target_edit_right
+                                edit_text.setLayoutParams(params)
+                except Exception as ex:
+                    log("[AisE][ERROR] apply_avatar_input_layout: " + traceback.format_exc())
+
+            def _input_layout_needs_restore(enter_view):
+                try:
+                    key = int(enter_view.hashCode())
+                    margins = original_input_margins.get(key)
+                    if margins is None:
+                        return False
+                    emoji_button = get_field(enter_view, 'emojiButton')
+                    edit_text = get_field(enter_view, 'messageEditText')
+                    if emoji_button is not None:
+                        params = emoji_button.getLayoutParams()
+                        if params is not None and params.leftMargin != margins[0]:
+                            return True
+                    if edit_text is not None:
+                        params = edit_text.getLayoutParams()
+                        if params is not None and (params.leftMargin != margins[1] or params.rightMargin != margins[2]):
+                            return True
+                    return False
+                except Exception:
+
+                    return True
+
+            def add_avatar_to_enter_view(enter_view, user_or_chat):
+                try:
+                    if not plugin_self._aise_active or not can_modify_input(enter_view):
+                        return
+                    msg_container = get_field(enter_view, 'messageEditTextContainer')
+                    if msg_container is None:
+                        return
+                    container_id = int(msg_container.hashCode())
+                    if container_id in pending_avatar_containers:
+                        return
+                    pending_avatar_containers.add(container_id)
+
+                    def show_view():
+                        try:
+                            if not plugin_self._aise_active or not can_modify_input(enter_view):
+                                return
+                            avatar_view = _find_aise_avatar(msg_container)
+                            avatar_drawable = _find_class('org.telegram.ui.Components.AvatarDrawable')()
+                            avatar_drawable.setInfo(user_or_chat)
+                            if avatar_view is not None:
+                                avatar_view.setForUserOrChat(user_or_chat, avatar_drawable)
+                                avatar_view.setAlpha(0.0 if bool(get_field(enter_view, 'recordingAudioVideo')) else 1.0)
+                                return
+                            avatar_view = _find_class('org.telegram.ui.Components.BackupImageView')(enter_view.getContext())
+                            avatar_view.setRoundRadius(get_avatar_radius())
+                            avatar_view.setForUserOrChat(user_or_chat, avatar_drawable)
+                            avatar_view.setClickable(False)
+                            avatar_view.setFocusable(False)
+                            avatar_view.setTag('aise_avatar')
+                            avatar_view.setAlpha(0.0 if bool(get_field(enter_view, 'recordingAudioVideo')) else 1.0)
+                            lp = _find_class('org.telegram.ui.Components.LayoutHelper').createFrame(
+                                36, 36, Gravity.BOTTOM | Gravity.LEFT, 6, 0, 0, 6
+                            )
+                            msg_container.addView(avatar_view, lp)
+                            avatar_views_by_container[container_id] = avatar_view
+                            apply_avatar_input_layout(enter_view, True)
+                        finally:
+                            pending_avatar_containers.discard(container_id)
+                    run_on_ui_thread(show_view)
+                except Exception:
+                    try:
+                        pending_avatar_containers.discard(int(msg_container.hashCode()))
+                    except Exception:
+                        pass
+
+            def remove_avatar_from_enter_view(enter_view):
+                if has_sender_select_view(enter_view):
+                    return
+                msg_container = get_field(enter_view, 'messageEditTextContainer')
+                if msg_container is None:
+                    return
+
+                try:
+                    avatar_present = _find_aise_avatar(msg_container) is not None
+                    if not avatar_present and not _input_layout_needs_restore(enter_view):
+                        return
+                except Exception:
+
+                    pass
+
+                def do_remove():
+                    avatar_view = _find_aise_avatar(msg_container)
+                    if avatar_view is not None:
+                        try:
+                            msg_container.removeView(avatar_view)
+                        except Exception:
+                            pass
+                    avatar_views_by_container.pop(int(msg_container.hashCode()), None)
+                    apply_avatar_input_layout(enter_view, False)
+                run_on_ui_thread(do_remove)
+
+            def cleanup_current_input_views():
+                def do_cleanup():
+                    try:
+                        fragment = get_last_fragment()
+                        if fragment is None:
+                            return
+                        for field_name in ('chatActivityEnterView', 'commentView'):
+                            enter_view = get_field(fragment, field_name)
+                            if enter_view is None:
+                                continue
+                            container = get_field(enter_view, 'messageEditTextContainer')
+                            if container is not None:
+                                avatar_views_by_container.pop(int(container.hashCode()), None)
+                                for index in range(container.getChildCount() - 1, -1, -1):
+                                    try:
+                                        child = container.getChildAt(index)
+                                        if child.getTag() == 'aise_avatar':
+                                            container.removeView(child)
+                                    except Exception:
+                                        pass
+                            margins = original_input_margins.pop(int(enter_view.hashCode()), None)
+                            if margins is None:
+                                continue
+                            emoji_button = get_field(enter_view, 'emojiButton')
+                            edit_text = get_field(enter_view, 'messageEditText')
+                            if emoji_button is not None:
+                                params = emoji_button.getLayoutParams()
+                                if params is not None:
+                                    params.leftMargin = margins[0]
+                                    emoji_button.setLayoutParams(params)
+                            if edit_text is not None:
+                                params = edit_text.getLayoutParams()
+                                if params is not None:
+                                    params.leftMargin = margins[1]
+                                    params.rightMargin = margins[2]
+                                    edit_text.setLayoutParams(params)
+                    except Exception as ex:
+                        log("[AisE][ERROR] cleanup_current_input_views: " + traceback.format_exc())
+                run_on_ui_thread(do_cleanup)
+
+            plugin_self._cleanup_callback = cleanup_current_input_views
+
+            pending_chat_resolutions = set()
+            pending_chat_resolutions_lock = threading.Lock()
+            pending_composer_resolutions = set()
+            pending_composer_resolutions_lock = threading.Lock()
+
+            def reconcile_composer(enter_view, resolve_missing=True):
+                try:
+                    if enter_view is None or not plugin_self._aise_active:
+                        return
+                    if _mode_flags(plugin_self)[0] and not _mode_flags(plugin_self)[1]:
+                        return
+
+                    block_reason = input_modification_block_reason(enter_view)
+                    if block_reason == 'sender_select':
+                        return
+                    if block_reason == 'bot_button':
+                        remove_avatar_from_enter_view(enter_view)
+                        return
+
+                    container = get_field(enter_view, 'messageEditTextContainer')
+                    if container is None:
+                        return
+                    avatar_view = _find_aise_avatar(container)
+                    if avatar_view is not None:
+                        apply_avatar_input_layout(enter_view, True, check_guard=False)
+                        emoji_alpha = get_field(enter_view, 'emojiButtonAlpha')
+                        if emoji_alpha is not None:
+                            target_alpha = float(emoji_alpha)
+                            try:
+                                if abs(float(avatar_view.getAlpha()) - target_alpha) > 0.001:
+                                    avatar_view.setAlpha(target_alpha)
+                            except Exception:
+                                pass
+                        return
+
+                    apply_avatar_input_layout(enter_view, False, check_guard=False)
+                    if not resolve_missing or not plugin_self.get_setting("force_avatar_pg", True):
+                        return
+
+                    fragment = get_last_fragment()
+                    if fragment is None:
+                        return
+                    try:
+                        dialog_id = int(fragment.getDialogId())
+                    except Exception:
+                        return
+                    account = get_account(fragment)
+                    if account is None or not dialog_id:
+                        return
+                    try:
+                        if int(get_field(fragment, 'chatActivityEnterView').hashCode()) != int(enter_view.hashCode()):
+                            return
+                    except Exception:
+                        return
+
+                    task_key = (int(enter_view.hashCode()), int(fragment.hashCode()), dialog_id, account)
+                    with pending_composer_resolutions_lock:
+                        if task_key in pending_composer_resolutions:
+                            return
+                        pending_composer_resolutions.add(task_key)
+
+                    def resolve_data():
+                        target = None
+                        apply_scheduled = False
+                        try:
+                            current_user = get_account_user(account)
+                            if current_user is None:
+                                return
+                            if _is_channel(dialog_id, account):
+                                target = get_account_chat(account, dialog_id)
+                            else:
+                                target = current_user
+                            if target is None:
+                                return
+
+                            def apply_data():
+                                try:
+                                    if not plugin_self._aise_active:
+                                        return
+                                    try:
+                                        if int(fragment.getDialogId()) != dialog_id:
+                                            return
+                                        current_view = get_field(fragment, 'chatActivityEnterView')
+                                        if current_view is None or int(current_view.hashCode()) != task_key[0]:
+                                            return
+                                    except Exception:
+                                        return
+
+                                    block_reason = input_modification_block_reason(current_view)
+                                    if block_reason == 'sender_select':
+                                        return
+                                    if block_reason == 'bot_button':
+                                        remove_avatar_from_enter_view(current_view)
+                                        return
+                                    add_avatar_to_enter_view(current_view, target)
+                                finally:
+                                    with pending_composer_resolutions_lock:
+                                        pending_composer_resolutions.discard(task_key)
+                            run_on_ui_thread(apply_data)
+                            apply_scheduled = True
+                        except Exception:
+                            log("[AisE][WARNING] Composer background resolution failed:\n" + traceback.format_exc())
+                        finally:
+
+                            if not apply_scheduled:
+                                with pending_composer_resolutions_lock:
+                                    pending_composer_resolutions.discard(task_key)
+
+                    threading.Thread(target=resolve_data, name="AisE-ComposerResolve", daemon=True).start()
+                except Exception:
+                    log("[AisE][ERROR] reconcile_composer: " + traceback.format_exc())
+
+            class ChatOpenHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+                        global _active_chat_list_view_id
+                        fragment = param.thisObject
+                        try:
+                            chat_list_view = get_field(fragment, 'chatListView')
+                            if chat_list_view is None:
+                                chat_list_view = getattr(fragment, 'chatListView', None)
+                            _active_chat_list_view_id = int(chat_list_view.hashCode()) if chat_list_view is not None else None
+                        except Exception:
+                            _active_chat_list_view_id = None
+                        try:
+                            dialog_id = int(fragment.getDialogId())
+                        except Exception:
+                            return
+                        if not dialog_id or not plugin_self._aise_active:
+                            return
+
+                        avatar_v2, avatar_v3 = _mode_flags(plugin_self)
+                        account = get_account(fragment)
+                        if account is None:
+                            return
+                        raw_enter_view = get_field(fragment, 'chatActivityEnterView')
+                        if raw_enter_view is None:
+                            return
+
+                        block_reason = input_modification_block_reason(raw_enter_view)
+                        if block_reason == 'sender_select':
+                            return
+                        if block_reason == 'bot_button':
+                            remove_avatar_from_enter_view(raw_enter_view)
+                            return
+                        if avatar_v2 and not avatar_v3:
+                            remove_avatar_from_enter_view(raw_enter_view)
+                            return
+
+                        existing_container = get_field(raw_enter_view, 'messageEditTextContainer')
+                        if existing_container is not None and _find_aise_avatar(existing_container) is not None:
+                            reconcile_composer(raw_enter_view, resolve_missing=False)
+                            return
+
+                        fragment_id = int(fragment.hashCode())
+                        task_key = (fragment_id, dialog_id, account)
+                        with pending_chat_resolutions_lock:
+                            if task_key in pending_chat_resolutions:
+                                return
+                            pending_chat_resolutions.add(task_key)
+
+                        def resolve_chat_data():
+                            target = None
+                            try:
+
+                                user_config = _find_class('org.telegram.messenger.UserConfig').getInstance(account)
+                                current_user = get_account_user(account)
+                                if current_user is None:
+                                    with pending_chat_resolutions_lock:
+                                        pending_chat_resolutions.discard(task_key)
+                                    return
+                                is_channel = _is_channel(dialog_id, account)
+                                if is_channel:
+                                    target = get_account_chat(account, dialog_id)
+                                else:
+                                    target = current_user
+                                if target is None:
+                                    with pending_chat_resolutions_lock:
+                                        pending_chat_resolutions.discard(task_key)
+                                    return
+
+                                def apply_resolved_data():
+                                    try:
+                                        if not plugin_self._aise_active:
+                                            return
+
+                                        try:
+                                            if int(fragment.getDialogId()) != dialog_id:
+                                                return
+                                        except Exception:
+                                            return
+                                        current_enter_view = get_field(fragment, 'chatActivityEnterView')
+                                        if current_enter_view is None or int(current_enter_view.hashCode()) != int(raw_enter_view.hashCode()):
+                                            return
+                                        block_reason = input_modification_block_reason(current_enter_view)
+                                        if block_reason == 'sender_select':
+                                            return
+                                        if block_reason == 'bot_button':
+                                            remove_avatar_from_enter_view(current_enter_view)
+                                            return
+                                        if _mode_flags(plugin_self)[0] and not _mode_flags(plugin_self)[1]:
+                                            remove_avatar_from_enter_view(current_enter_view)
+                                            return
+
+                                        add_avatar_to_enter_view(current_enter_view, target)
+                                    finally:
+                                        with pending_chat_resolutions_lock:
+                                            pending_chat_resolutions.discard(task_key)
+                                run_on_ui_thread(apply_resolved_data)
+                            except Exception:
+                                log("[AisE][ERROR] ChatOpenHook background resolution: " + traceback.format_exc())
+                                with pending_chat_resolutions_lock:
+                                    pending_chat_resolutions.discard(task_key)
+
+                        threading.Thread(target=resolve_chat_data, name="AisE-ChatResolve", daemon=True).start()
+                    except Exception:
+                        log("[AisE][ERROR] ChatOpenHook: " + traceback.format_exc())
+
+            class UpdateBotButtonHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+                        reconcile_composer(param.thisObject, resolve_missing=True)
+                    except Exception:
+                        pass
+
+            class EmojiButtonParamsHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+                        reconcile_composer(param.thisObject, resolve_missing=True)
+                    except Exception as ex:
+                        log("[AisE][ERROR] EmojiButtonParamsHook: " + traceback.format_exc())
+
+            class EmojiButtonLayoutHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+
+                        reconcile_composer(param.thisObject, resolve_missing=False)
+                    except Exception as ex:
+                        log("[AisE][ERROR] EmojiButtonLayoutHook: " + traceback.format_exc())
+
+            class SenderSelectVisibilityHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+                        fragment = get_last_fragment()
+                        if fragment is None:
+                            return
+                        enter_view = get_field(fragment, 'chatActivityEnterView')
+                        if enter_view is None:
+                            return
+                        sender = None
+                        try:
+                            sender = getattr(enter_view, 'senderSelectView')
+                        except Exception:
+                            try:
+                                sender = getattr(enter_view.JA.JNGS, 'senderSelectView')
+                            except Exception:
+                                return
+                        if sender is not None and int(sender.hashCode()) == int(param.thisObject.hashCode()):
+                            reconcile_composer(enter_view, resolve_missing=True)
+                    except Exception:
+                        pass
+
+            class CellHook(MethodHook):
+                def apply_flags(self, param):
+                    try:
+                        if not getattr(plugin_self, '_aise_interlocutor_enabled', False):
+                            return
+                        cell = param.thisObject
+                        msg_obj = cell.getMessageObject()
+                        if msg_obj is None or bool(msg_obj.isOut()):
+                            return
+                        dialog_id = int(msg_obj.getDialogId())
+                        if dialog_id <= 0:
+                            return
+                        account = int(getattr(msg_obj, 'currentAccount', 0))
+                        client_id = _client_user_id(account)
+                        if client_id is None or dialog_id == client_id:
+                            return
+                        cell.JA.JNGS.isChat = True
+                    except Exception:
+                        pass
+
+                def before_hooked_method(self, param):
+                    self.apply_flags(param)
+
+                def after_hooked_method(self, param):
+                    self.apply_flags(param)
+
+            ChatActivityClass = _find_class('org.telegram.ui.ChatActivity')
+            self._avatar_hook = self.hook_all_methods(ChatActivityClass, 'onResume', ChatOpenHook())
+            self._avatar_hook_2 = self.hook_all_methods(ChatActivityClass, 'onTransitionAnimationEnd', ChatOpenHook())
+            self._avatar_hook_3 = self.hook_all_methods(ChatActivityClass, 'onBecomeFullyVisible', ChatOpenHook())
+
+            DialogsActivityClass = _find_class('org.telegram.ui.DialogsActivity')
+            plugin_self_ref = plugin_self
+
+            class DialogsShareHook(MethodHook):
+                def __init__(self):
+                    self._hooked_view_id = None
+
+                def after_hooked_method(self, param):
+                    try:
+
+                        if plugin_self_ref.get_setting("avatar_v2_pg", False) and not plugin_self_ref.get_setting("avatar_v3_pg", False):
+                            return
+                        fragment = param.thisObject
+                        method_name = param.method.getName() if param.method else "?"
+
+                        comment_view = get_field(fragment, 'commentView')
+                        if not comment_view:
+                            return
+                        account = get_account(fragment)
+                        if account is None:
+                            return
+                        current_user = get_account_user(account)
+                        if not current_user:
+                            return
+
+                        current_id = comment_view.hashCode()
+                        if self._hooked_view_id == current_id:
+                            return
+
+                        if plugin_self_ref._share_measure_hook is not None:
+                            try:
+                                plugin_self_ref.unhook_method(plugin_self_ref._share_measure_hook)
+                            except Exception:
+                                pass
+                            plugin_self_ref._share_measure_hook = None
+
+                        self._hooked_view_id = current_id
+                        user_ref = current_user
+
+                        class ShareCommentMeasureHook(MethodHook):
+                            def __init__(self):
+                                self._done = False
+
+                            def after_hooked_method(self_, param_):
+                                if self_._done:
+                                    return
+                                try:
+                                    if _mode_flags(plugin_self_ref)[0] and not _mode_flags(plugin_self_ref)[1]:
+                                        self_._done = True
+                                        try:
+                                            active_hook = plugin_self_ref._share_measure_hook
+                                            if active_hook is not None:
+                                                plugin_self_ref.unhook_method(active_hook)
+                                                plugin_self_ref._share_measure_hook = None
+                                        except Exception:
+                                            pass
+                                        return
+                                    if param_.thisObject.hashCode() != current_id:
+                                        return
+                                    self_._done = True
+                                    try:
+                                        active_hook = plugin_self_ref._share_measure_hook
+                                        if active_hook is not None:
+                                            plugin_self_ref.unhook_method(active_hook)
+                                            plugin_self_ref._share_measure_hook = None
+                                    except Exception:
+                                        pass
+                                    try:
+                                        biv_name = 'org.telegram.ui.Components.BackupImageView'
+                                        container = get_field(comment_view, 'messageEditTextContainer')
+                                        if container is not None:
+                                            for i in range(container.getChildCount()):
+                                                child = container.getChildAt(i)
+                                                try:
+                                                    if child.getClass().getName() == biv_name:
+                                                        return
+                                                except Exception:
+                                                    pass
+                                    except Exception:
+                                        pass
+                                    add_avatar_to_enter_view(comment_view, user_ref)
+                                except Exception as ex:
+                                    log("[AisE][ERROR] ShareCommentMeasureHook: " + traceback.format_exc())
+
+                        try:
+                            Class = jclass("java.lang.Class")
+                            EnterViewClass = Class.forName('org.telegram.ui.Components.ChatActivityEnterView')
+                            measure_method = EnterViewClass.getDeclaredMethod('onMeasure', JInteger.TYPE, JInteger.TYPE)
+                            measure_method.setAccessible(True)
+                            hook_instance = ShareCommentMeasureHook()
+                            plugin_self_ref._share_measure_hook = plugin_self_ref.hook_method(measure_method, hook_instance)
+                        except Exception:
+                            log("[AisE][ERROR] Failed to hook ChatActivityEnterView.onMeasure for share comment: " + traceback.format_exc())
+                    except Exception as ex:
+                        log("[AisE][ERROR] DialogsShareHook: " + traceback.format_exc())
+
+            self._dialogs_share_hook = self.hook_all_methods(DialogsActivityClass, 'onResume', DialogsShareHook())
+            self._dialogs_share_hook_2 = self.hook_all_methods(DialogsActivityClass, 'onBecomeFullyVisible', DialogsShareHook())
+            self._dialogs_share_hook_3 = self.hook_all_methods(DialogsActivityClass, 'updateSelectedCount', DialogsShareHook())
+
+            ChatActivityEnterViewClass = _find_class('org.telegram.ui.Components.ChatActivityEnterView')
+            self._update_bot_button_hook = self.hook_all_methods(ChatActivityEnterViewClass, 'updateBotButton', UpdateBotButtonHook())
+            self._emoji_params_hook = self.hook_all_methods(ChatActivityEnterViewClass, 'updateEmojiButtonParams', EmojiButtonParamsHook())
+            self._emoji_layout_hook = self.hook_all_methods(ChatActivityEnterViewClass, 'onMeasure', EmojiButtonLayoutHook())
+            self._sender_select_visibility_hook = self.hook_all_methods(View, 'setVisibility', SenderSelectVisibilityHook())
+
+            global _CHAT_MESSAGE_CELL_CLASS
+            cell_class = _find_class('org.telegram.ui.Cells.ChatMessageCell')
+            _CHAT_MESSAGE_CELL_CLASS = cell_class
+            cell_hook = CellHook()
+
+            self._cell_hook_1 = self.hook_all_methods(cell_class, 'setMessageObject', cell_hook)
+            self._cell_hook_2 = self.hook_all_methods(cell_class, 'setPinnedBottomTop', cell_hook)
+            self._cell_hook_3 = self.hook_all_methods(cell_class, 'bind', cell_hook)
+            self._cell_hook_4 = self.hook_all_methods(cell_class, 'setMessageContent', cell_hook)
+
+            v2_bind = OwnMessageAvatarBindHook(plugin_self)
+            v2_draw = OwnMessageAvatarDrawHook(plugin_self)
+
+            self._own_message_avatar_hook_1 = self.hook_all_methods(cell_class, 'setMessageObject', v2_bind)
+            self._own_message_avatar_hook_2 = None
+
+            RecyclerListViewClass = _find_class('org.telegram.ui.Components.RecyclerListView')
+            self._own_message_avatar_hook_3 = self.hook_all_methods(RecyclerListViewClass, 'dispatchDraw', v2_draw)
+
+            def open_own_profile(cell, account):
+                try:
+                    me = _message_avatar_user(account)
+                    if me is None:
+                        return
+                    user_id = int(me.id)
+                except Exception:
+                    return
+                context = None
+                try:
+                    context = cell.getContext()
+                except Exception:
+                    pass
+                try:
+                    Bundle = _find_class('android.os.Bundle')
+                    args = Bundle()
+                    args.putLong('user_id', user_id)
+                    ProfileActivity = _find_class('org.telegram.ui.ProfileActivity')
+                    profile = ProfileActivity(args)
+                    LaunchActivity = _find_class('org.telegram.ui.LaunchActivity')
+                    activity = LaunchActivity.instance if LaunchActivity is not None else None
+                    if activity is not None and bool(activity.presentFragment(profile, False, False)):
+                        return
+                except Exception:
+                    pass
+                try:
+                    Browser = _find_class('org.telegram.messenger.browser.Browser')
+                    Browser.openUrl(context, 'tg://user?id=' + str(user_id))
+                except Exception:
+                    pass
+
+            class OwnMessageAvatarTouchHook(MethodHook):
+                def before_hooked_method(self, param):
+                    try:
+                        mode_flags = _mode_flags(plugin_self)
+                        if not any(mode_flags):
+                            return
+                        rv = param.thisObject
+                        if _active_chat_list_view_id is None or int(rv.hashCode()) != _active_chat_list_view_id:
+                            return
+                        event = param.args[0]
+                        action = event.getAction()
+                        if action != 0 and action != 1:
+                            return
+                        x = event.getX()
+                        y = event.getY()
+                        size = AndroidUtilities.dp(42)
+                        pad = AndroidUtilities.dp(8)
+                        extra = AndroidUtilities.dp(4)
+                        for cell_hash, child in tuple(_own_message_avatar_cells.items()):
+                            try:
+                                if child.getParent() != rv or _message_avatar_is_pinned(child, 'pinnedBottom'):
+                                    continue
+                                receiver = _message_avatar_receivers.get(cell_hash)
+                                if receiver is None:
+                                    continue
+                                cx = child.getX() + child.getWidth() + extra
+                                cy = child.getY() + child.getHeight() - pad - size
+                                if cx <= x <= cx + size and cy <= y <= cy + size:
+                                    if action == 1:
+                                        msg = child.getMessageObject()
+                                        account = int(getattr(msg, 'currentAccount', 0)) if msg is not None else 0
+                                        run_on_ui_thread(lambda cell=child, acc=account: open_own_profile(cell, acc))
+                                    param.setResult(True)
+                                    return
+                            except Exception:
+                                pass
+                    except Exception as ex:
+                        log("[AisE][ERROR] OwnMessageAvatarTouchHook: " + traceback.format_exc())
+
+            self._own_message_avatar_hook_4 = self.hook_all_methods(RecyclerListViewClass, 'dispatchTouchEvent', OwnMessageAvatarTouchHook())
+
+        except Exception:
+            full = traceback.format_exc()
+            log("[AisE][ERROR] _install_avatar_hooks failed:\n" + full)
+
+    def _update_mode_settings(self, value):
+        v2 = value == 1
+        v3 = value == 2
+        self.set_setting("avatar_v2_pg", v2)
+        self.set_setting("avatar_v3_pg", v3)
+        self._aise_mode_flags = (v2, v3)
+
+    def create_settings(self):
+        return [
+            Header(text="Аватары"),
+            Selector(
+                key="avatar_mode_sel_pg",
+                text="Вид аватара",
+                default=2,
+                items=["Вид 1 — поле ввода", "Вид 2 — у сообщений", "Вид 3 — всё вместе"],
+                icon="menu_instant_view_solar",
+                on_change=lambda v: self._update_mode_settings(v),
+            ),
+            Switch(
+                key="interlocutor_avatar_pg", text="Аватар собеседника", default=True, icon="msg_groups",
+                on_change=lambda value: setattr(self, '_aise_interlocutor_enabled', bool(value)),
+            ),
+        ]
+
+    def on_plugin_unload(self):
+        self._aise_active = False
+        cleanup = getattr(self, '_cleanup_callback', None)
+        if cleanup is not None:
+            try:
+                cleanup()
+            except Exception:
+                pass
+            self._cleanup_callback = None
+        for attr in (
+            '_avatar_hook', '_avatar_hook_2', '_avatar_hook_3',
+            '_update_bot_button_hook',
+            '_dialogs_share_hook', '_dialogs_share_hook_2', '_dialogs_share_hook_3', '_share_measure_hook',
+            '_cell_hook_1', '_cell_hook_2', '_cell_hook_3', '_cell_hook_4',
+            '_own_message_avatar_hook_1', '_own_message_avatar_hook_2', '_own_message_avatar_hook_3', '_own_message_avatar_hook_4',
+            '_emoji_params_hook', '_emoji_layout_hook', '_sender_select_visibility_hook',
+        ):
+            hook = getattr(self, attr, None)
+            if hook:
+                handles = hook if isinstance(hook, (list, tuple)) else (hook,)
+                for handle in handles:
+                    try:
+                        self.unhook_method(handle)
+                    except Exception:
+                        pass
+                setattr(self, attr, None)
+        global _active_chat_list_view_id, _CHAT_MESSAGE_CELL_CLASS
+        _clear_message_avatar_receivers()
+        _message_avatar_receiver_owners.clear()
+        _message_avatar_receiver_users.clear()
+        _message_avatar_pin_fields.clear()
+        _clipped_parents.clear()
+        _CLIENT_IDS.clear()
+        _CHANNEL_CACHE.clear()
+        _active_chat_list_view_id = None
+        _CHAT_MESSAGE_CELL_CLASS = None
+        _JAVA_CLASS_CACHE.clear()
+
