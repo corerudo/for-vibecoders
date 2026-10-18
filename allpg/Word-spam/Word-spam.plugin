@@ -9,7 +9,7 @@ from ui.bulletin import BulletinHelper
 
 __id__ = "ws"
 __name__ = "Спамер"
-__description__ = "Отправляет слова по одному с заданной задержкой. Формат: .sp число слово1 слово2. Остановка: .stsp или .stsp all"
+__description__ = "Отправляет слова по одному с заданной задержкой.\nФормат: .sp число слово1 слово2.\nОстановка: .stsp или .stsp all"
 __version__ = "1.0.0"
 __author__ = "@jaxbastard"
 __icon__ = "DendziDzheksJaxbastard/11"
