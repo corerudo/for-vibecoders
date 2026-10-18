@@ -1,0 +1,117 @@
+import threading
+import time
+import traceback
+
+from java import jclass
+from android_utils import copy_to_clipboard
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from client_utils import send_text
+from ui.bulletin import BulletinHelper
+
+__id__ = "ws"
+__name__ = "Спамер"
+__description__ = "Отправляет слова по одному с заданной задержкой. Формат: .sp число слово1 слово2"
+__version__ = "1.1.0"
+__author__ = "@jaxbastard"
+__icon__ = "DendziDzheksJaxbastard/11"
+__min_version__ = "12.10.6"
+
+MAX_DELAY_MS = 86400000
+
+
+def _show_copyable_error(message, error):
+    try:
+        details = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        BulletinHelper.show_with_button(
+            message,
+            jclass("org.telegram.messenger.R").raw.error,
+            "Скопировать ошибку",
+            on_click=lambda: copy_to_clipboard(details),
+        )
+    except Exception:
+        try:
+            BulletinHelper.show_error(message + ": " + str(error))
+        except Exception:
+            pass
+
+
+class WordSenderSPPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+
+    def on_send_message_hook(self, account, params):
+        result = HookResult()
+        message = getattr(params, "message", None)
+        if not isinstance(message, str):
+            return result
+
+        message = message.strip()
+        if not message.lower().startswith(".sp"):
+            return result
+        if len(message) > 3 and not message[3].isspace():
+            return result
+
+        parts = message.split()
+        if len(parts) < 2:
+            _show_copyable_error(
+                "Нет слов для отправки",
+                ValueError("Формат: .sp [задержка_мс] слово1 слово2"),
+            )
+            result.strategy = HookStrategy.CANCEL
+            return result
+
+        try:
+            delay_ms = int(parts[1])
+            words = parts[2:]
+        except (TypeError, ValueError):
+            delay_ms = 0
+            words = parts[1:]
+
+        if not words:
+            _show_copyable_error(
+                "Нет слов для отправки",
+                ValueError("Формат: .sp [задержка_мс] слово1 слово2"),
+            )
+            result.strategy = HookStrategy.CANCEL
+            return result
+
+        if delay_ms < 0 or delay_ms > MAX_DELAY_MS:
+            _show_copyable_error(
+                "Задержка вне допустимого диапазона",
+                ValueError("Задержка должна быть от 0 до 86400000 мс."),
+            )
+            result.strategy = HookStrategy.CANCEL
+            return result
+
+        peer_id = getattr(params, "peer", None)
+        if peer_id is None:
+            _show_copyable_error(
+                "Не удалось определить текущий чат",
+                RuntimeError("params.peer отсутствует"),
+            )
+            result.strategy = HookStrategy.CANCEL
+            return result
+
+        result.strategy = HookStrategy.CANCEL
+        worker = threading.Thread(
+            target=self._send_words,
+            args=(peer_id, words, delay_ms),
+            daemon=True,
+            name="word-sender",
+        )
+        worker.start()
+        return result
+
+    def _send_words(self, peer_id, words, delay_ms):
+        delay_seconds = delay_ms / 1000.0
+        for index, word in enumerate(words):
+            try:
+                send_text(peer_id, word)
+            except Exception as error:
+                _show_copyable_error(
+                    "Не удалось отправить слово " + str(index + 1),
+                    error,
+                )
+                return
+            if index < len(words) - 1 and delay_seconds:
+                time.sleep(delay_seconds)
