@@ -1,5 +1,4 @@
 import threading
-import time
 import traceback
 
 from java import jclass
@@ -10,8 +9,8 @@ from ui.bulletin import BulletinHelper
 
 __id__ = "ws"
 __name__ = "Спамер"
-__description__ = "Отправляет слова по одному с заданной задержкой. Формат: .sp число слово1 слово2"
-__version__ = "1.1.0"
+__description__ = "Отправляет слова по одному с заданной задержкой. Формат: .sp число слово1 слово2. Остановка: .stsp или .stsp all"
+__version__ = "1.0.0"
 __author__ = "@jaxbastard"
 __icon__ = "DendziDzheksJaxbastard/11"
 __min_version__ = "12.10.6"
@@ -35,9 +34,44 @@ def _show_copyable_error(message, error):
             pass
 
 
+def _notify(message):
+    try:
+        BulletinHelper.show_info(message)
+    except Exception:
+        pass
+
+
+def _is_command(message, command):
+    if not message.lower().startswith(command):
+        return False
+    return len(message) == len(command) or message[len(command)].isspace()
+
+
+class _SendJob:
+    def __init__(self, peer_id):
+        self.peer_id = peer_id
+        self.stop_event = threading.Event()
+
+
 class WordSenderSPPlugin(BasePlugin):
     def on_plugin_load(self):
+        self._jobs = []
+        self._lock = threading.Lock()
         self.add_on_send_message_hook()
+
+    def on_plugin_unload(self):
+        self._stop_jobs()
+
+    def _stop_jobs(self, peer_id=None):
+        with self._lock:
+            targets = [
+                job
+                for job in self._jobs
+                if not job.stop_event.is_set() and (peer_id is None or job.peer_id == peer_id)
+            ]
+        for job in targets:
+            job.stop_event.set()
+        return len(targets)
 
     def on_send_message_hook(self, account, params):
         result = HookResult()
@@ -46,9 +80,9 @@ class WordSenderSPPlugin(BasePlugin):
             return result
 
         message = message.strip()
-        if not message.lower().startswith(".sp"):
-            return result
-        if len(message) > 3 and not message[3].isspace():
+        if _is_command(message, ".stsp"):
+            return self._handle_stop(params, message, result)
+        if not _is_command(message, ".sp"):
             return result
 
         parts = message.split()
@@ -93,25 +127,72 @@ class WordSenderSPPlugin(BasePlugin):
             return result
 
         result.strategy = HookStrategy.CANCEL
+        job = _SendJob(peer_id)
+        with self._lock:
+            self._jobs.append(job)
         worker = threading.Thread(
             target=self._send_words,
-            args=(peer_id, words, delay_ms),
+            args=(job, words, delay_ms),
             daemon=True,
             name="word-sender",
         )
-        worker.start()
+        try:
+            worker.start()
+        except Exception as error:
+            with self._lock:
+                if job in self._jobs:
+                    self._jobs.remove(job)
+            _show_copyable_error("Не удалось запустить отправку", error)
         return result
 
-    def _send_words(self, peer_id, words, delay_ms):
-        delay_seconds = delay_ms / 1000.0
-        for index, word in enumerate(words):
-            try:
-                send_text(peer_id, word)
-            except Exception as error:
+    def _handle_stop(self, params, message, result):
+        result.strategy = HookStrategy.CANCEL
+        parts = message.split()
+        stop_all = False
+        if len(parts) > 1:
+            if len(parts) == 2 and parts[1].lower() == "all":
+                stop_all = True
+            else:
                 _show_copyable_error(
-                    "Не удалось отправить слово " + str(index + 1),
-                    error,
+                    "Неверный формат остановки",
+                    ValueError("Формат: .stsp или .stsp all"),
                 )
-                return
-            if index < len(words) - 1 and delay_seconds:
-                time.sleep(delay_seconds)
+                return result
+
+        peer_id = getattr(params, "peer", None)
+        if not stop_all and peer_id is None:
+            _show_copyable_error(
+                "Не удалось определить текущий чат",
+                RuntimeError("params.peer отсутствует"),
+            )
+            return result
+
+        stopped = self._stop_jobs(None if stop_all else peer_id)
+        if stopped:
+            _notify("Остановлено отправок: " + str(stopped))
+        else:
+            _notify("Нет активной отправки")
+        return result
+
+    def _send_words(self, job, words, delay_ms):
+        delay_seconds = delay_ms / 1000.0
+        last_index = len(words) - 1
+        try:
+            for index, word in enumerate(words):
+                if job.stop_event.is_set():
+                    return
+                try:
+                    send_text(job.peer_id, word)
+                except Exception as error:
+                    _show_copyable_error(
+                        "Не удалось отправить слово " + str(index + 1),
+                        error,
+                    )
+                    return
+                if index < last_index and delay_seconds:
+                    if job.stop_event.wait(delay_seconds):
+                        return
+        finally:
+            with self._lock:
+                if job in self._jobs:
+                    self._jobs.remove(job)
