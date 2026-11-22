@@ -1,0 +1,243 @@
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from java.util import ArrayList
+from markdown_utils import parse_markdown
+from org.telegram.tgnet import TLRPC
+from ui.settings import Input, Switch, Custom
+from android.graphics import PorterDuff, PorterDuffColorFilter
+from android.graphics.drawable import GradientDrawable
+from android.text import TextUtils
+from android.view import Gravity, View
+from android.widget import ImageView, LinearLayout, TextView
+from org.telegram.messenger import AndroidUtilities, ApplicationLoader
+from org.telegram.ui.ActionBar import Theme
+from java import dynamic_proxy
+
+__id__ = "genderlib"
+__name__ = "gender-oriented library"
+__description__ = "Отправляет встроенную гендерно-ориентационную библиотеку по команде"
+__icon__ = "RandomStikery324/26"
+__version__ = "1.2.0"
+__author__ = "@jxbplug"
+__min_version__ = "11.12.1"
+
+SGL_TEXT = "*Добро пожаловать в гендерно-ориентационную библиотеку.*\n### Ориентация\n(к кому человек испытывает сексуальное и/или романтическое влечение)\n\nОсновные:\n- Гетеросексуал (натурал / straight) — влечение только к людям противоположного пола/гендера.\n- Гей — мужчина (или человек, идентифицирующий себя как мужчину), которому нравятся мужчины.\n- Лесбиянка — женщина (или человек, идентифицирующий себя как женщину), которой нравятся женщины.\n- Бисексуал — влечение к людям более чем одного пола/гендера (не обязательно в равной степени и не обязательно одновременно).\n- Пансексуал — влечение к людям независимо от их пола и гендера (гендер не играет роли).\n- Омнисексуал — похож на пансексуала, но человек осознаёт гендер партнёра (гендер имеет значение, но не ограничивает).\n- Полисексуал — влечение к нескольким, но не ко всем гендерам.\n- Квир — зонтичный термин для тех, чья ориентация не вписывается в традиционные категории или кто просто не хочет уточнять.\n\nАсексуальный спектр:\n- Асексуал (ace) — почти или совсем не испытывает сексуального влечения.\n- Грейсексуал (gray-A / greysexual) — очень редкое или слабое сексуальное влечение.\n- Демисексуал — сексуальное влечение появляется только после сильной эмоциональной связи.\n- Купиосексуал — хочет секса/интимных отношений, но не испытывает сексуального влечения.\n- Автосексуал — испытывает влечение преимущественно или исключительно к самому себе.\n- Аллосексуал — человек, который испытывает сексуальное влечение (противоположность асексуальному спектру).\n\nДругие:\n- Андросексуал — влечение к маскулинности / мужским чертам (независимо от пола человека).\n- Гиносексуал — влечение к феминности / женским чертам (независимо от пола человека).\n- Сапиосексуал — ключевым фактором привлекательности является интеллект.\n- Сколиосексуал — влечение преимущественно к небинарным и/или трансгендерным людям.\n- Фиктосексуал — основное или исключительное влечение к вымышленным персонажам.\n- Абросексуал — ориентация, которая со временем меняется (текучая).\n- Литосексуал (литромантик) — нравится человек, но взаимность отталкивает / снижает интерес.\n- Аромантик — почти или совсем не испытывает романтического влечения (часто идёт вместе с асексуальностью, но не обязательно).\n\n### Гендер\n(кем человек себя ощущает)\n\nОсновные:\n- Цисгендер (цис) — гендерная идентичность совпадает с полом, присвоенным при рождении.\n- Трансгендер (транс) — гендерная идентичность не совпадает с полом, присвоенным при рождении.\n- Небинарный / энби (enby) — человек, который не ощущает себя строго мужчиной или женщиной (зонтичный термин).\n- Агендер — отсутствие гендерной идентичности или ощущение, что гендера нет.\n- Бигендер — ощущает себя двумя гендерами (одновременно или по очереди).\n- Гендерфлюид — гендерная идентичность меняется со временем.\n- Демибой — частично идентифицирует себя как мужчину.\n- Демигёрл — частично идентифицирует себя как женщину.\n- Гендерквир — не вписывается в традиционные представления о гендере (часто пересекается с небинарностью).\n\nДругие:\n- Интерсекс — человек, родившийся с половыми характеристиками, которые не вписываются чётко в типичные мужские или женские (это про биологию/тело, а не про идентичность).\n- Нейтроис — нейтральный гендер, ощущение «нулевого» или отсутствующего гендера.\n- Маверик — небинарная идентичность, которая существует отдельно от мужского и женского (не «между» и не «смесь»).\n- Трансмаскулинный / трансфеминный — зонтичные термины для людей, чья гендерная идентичность смещена в сторону маскулинности или феминности.\n- Квир — снова зонтичный термин, когда человек не хочет или не может вписаться в конкретные категории."
+
+DEFAULT_COMMAND = "sgl"
+
+
+def utf16_length(value):
+    return len(value.encode("utf-16-le")) // 2
+
+
+class Click1(dynamic_proxy(View.OnClickListener)):
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def onClick(self, view):
+        self._fn(view)
+
+
+def argb(alpha, rgb):
+    value = ((alpha & 0xFF) << 24) | (rgb & 0xFFFFFF)
+    return value - (1 << 32) if value >= (1 << 31) else value
+
+
+def set_bold(view):
+    try:
+        view.setTypeface(AndroidUtilities.bold())
+    except Exception:
+        try:
+            view.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"))
+        except Exception:
+            pass
+
+
+def load_icon(context, name, color):
+    try:
+        res_id = context.getResources().getIdentifier(name, "drawable", context.getPackageName())
+        if not res_id:
+            return None
+        icon = context.getResources().getDrawable(res_id).mutate()
+        icon.setColorFilter(PorterDuffColorFilter(color, PorterDuff.Mode.MULTIPLY))
+        return icon
+    except Exception:
+        return None
+
+
+class GenderLibraryPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+
+    def on_command_change(self, new_value):
+        command = new_value.strip() if isinstance(new_value, str) else ""
+        while command and not command[0].isalnum() and command[0] != "_":
+            command = command[1:]
+
+        if not command:
+            self.set_setting("command_pg", DEFAULT_COMMAND, reload_settings=True)
+
+    def create_settings(self):
+        return [
+            Input(
+                key="command_pg",
+                text="Команда",
+                default=DEFAULT_COMMAND,
+                icon="attach_send_solar",
+                on_change=self.on_command_change,
+            ),
+            self.create_prefix_view(),
+            Switch(
+                key="collapsed",
+                text="Сворачивать цитату",
+                subtext="Сворачивать или разворачивать цитату в отправленном сообщении",
+                default=True,
+                icon="formatting_quote_solar",
+            ),
+        ]
+
+    def create_prefix_view(self):
+        context = ApplicationLoader.applicationContext
+        dp = AndroidUtilities.dp
+
+        text_color = Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)
+        hint_color = Theme.getColor(Theme.key_windowBackgroundWhiteGrayText2)
+        icon_color = Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon)
+        accent_color = Theme.getColor(Theme.key_windowBackgroundWhiteValueText)
+
+        root = LinearLayout(context)
+        root.setOrientation(LinearLayout.HORIZONTAL)
+        root.setGravity(Gravity.CENTER_VERTICAL)
+        root.setPadding(dp(18), dp(8), dp(16), dp(8))
+        root.setMinimumHeight(dp(64))
+
+        icon_drawable = load_icon(context, "group_edit_profile_solar", icon_color)
+        if icon_drawable is not None:
+            icon_view = ImageView(context)
+            icon_view.setScaleType(ImageView.ScaleType.CENTER)
+            icon_view.setImageDrawable(icon_drawable)
+            root.addView(icon_view, LinearLayout.LayoutParams(dp(24), dp(24)))
+
+        labels = LinearLayout(context)
+        labels.setOrientation(LinearLayout.VERTICAL)
+        labels.setGravity(Gravity.CENTER_VERTICAL)
+
+        title = TextView(context)
+        title.setText("Префикс")
+        title.setTextSize(16)
+        title.setTextColor(text_color)
+        title.setSingleLine(True)
+        title.setEllipsize(TextUtils.TruncateAt.END)
+
+        subtitle = TextView(context)
+        subtitle.setText("Символ перед командой")
+        subtitle.setTextSize(13)
+        subtitle.setTextColor(hint_color)
+        subtitle.setSingleLine(True)
+        subtitle.setEllipsize(TextUtils.TruncateAt.END)
+
+        labels.addView(title)
+        labels.addView(subtitle)
+
+        labels_params = LinearLayout.LayoutParams(0, -2, 1.0)
+        labels_params.leftMargin = dp(22) if icon_drawable is not None else 0
+        labels_params.rightMargin = dp(12)
+        root.addView(labels, labels_params)
+
+        track = LinearLayout(context)
+        track.setOrientation(LinearLayout.HORIZONTAL)
+        track.setGravity(Gravity.CENTER)
+        track.setPadding(dp(3), dp(3), dp(3), dp(3))
+
+        track_bg = GradientDrawable()
+        track_bg.setColor(argb(0x1F, hint_color))
+        track_bg.setCornerRadius(dp(12))
+        track.setBackground(track_bg)
+
+        prefixes = ("!", ".", ",")
+        selected = self.get_setting("prefix_index", 1)
+
+        if not isinstance(selected, int) or isinstance(selected, bool) or selected not in range(len(prefixes)):
+            selected = 1
+
+        state = {"index": selected}
+        chips = []
+
+        def refresh():
+            for i, chip in enumerate(chips):
+                active = i == state["index"]
+                bg = GradientDrawable()
+                bg.setColor(accent_color if active else 0)
+                bg.setCornerRadius(dp(9))
+                chip.setBackground(bg)
+                chip.setTextColor(-1 if active else text_color)
+
+        def make_click(index):
+            def on_click(view):
+                if state["index"] == index:
+                    return
+                state["index"] = index
+                self.set_setting("prefix_index", index)
+                refresh()
+            return on_click
+
+        for i, prefix in enumerate(prefixes):
+            chip = TextView(context)
+            chip.setText(prefix)
+            chip.setTextSize(18)
+            chip.setGravity(Gravity.CENTER)
+            set_bold(chip)
+            chip.setOnClickListener(Click1(make_click(i)))
+            chips.append(chip)
+            track.addView(chip, LinearLayout.LayoutParams(dp(38), dp(32)))
+
+        refresh()
+        root.addView(track, LinearLayout.LayoutParams(-2, -2))
+
+        return Custom(view=root)
+
+    def on_send_message_hook(self, _account, params):
+        message = getattr(params, "message", None)
+        if not isinstance(message, str):
+            return HookResult()
+
+        command = self.get_setting("command_pg", DEFAULT_COMMAND)
+        prefixes = ("!", ".", ",")
+        prefix_index = self.get_setting("prefix_index", 1)
+
+        if not isinstance(command, str):
+            return HookResult()
+
+        if not isinstance(prefix_index, int) or isinstance(prefix_index, bool) or prefix_index not in range(len(prefixes)):
+            prefix_index = 1
+
+        command = command.strip()
+        prefix = prefixes[prefix_index]
+        while command and not command[0].isalnum() and command[0] != "_":
+            command = command[1:]
+
+        if not command or message.strip().casefold() != (prefix + command).casefold():
+            return HookResult()
+
+        try:
+            parsed = parse_markdown(SGL_TEXT)
+            text = parsed.text
+            entities = ArrayList()
+
+            for entity in parsed.entities:
+                entities.add(entity.to_tlrpc_object())
+
+            quote_start = text.find("\n") + 1
+            if quote_start > 0:
+                blockquote = TLRPC.TL_messageEntityBlockquote()
+                blockquote.offset = utf16_length(text[:quote_start])
+                blockquote.length = utf16_length(text[quote_start:])
+                blockquote.collapsed = bool(self.get_setting("collapsed", True))
+                entities.add(blockquote)
+
+            params.message = text
+            params.entities = entities
+        except Exception:
+            return HookResult()
+
+        return HookResult(strategy=HookStrategy.MODIFY, params=params)
