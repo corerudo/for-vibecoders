@@ -197,7 +197,7 @@ jobs:
               '{chat_id: $chat_id, text: $text}')
           fi
 
-          curl -X POST https://corerudo.larten.ru/webhook \
+          curl -X POST https://notifier.jaxbastard.space \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $OIDC_TOKEN" \
             -d "$PAYLOAD"
