@@ -33,14 +33,14 @@ RU:
 - [exteraSquad/plugins-pysdk-builds](https://github.com/exteraSquad/plugins-pysdk-builds) — официальный репозиторий сборок Python SDK и файлов типизации (1.4.6.x)
 - [исходники Telegram для Android](https://github.com/DrKLO/Telegram/tree/009e97356f966bb81eceba113d210230bf383122) — база для понимания внутренностей
 - [канал с плагинами](https://t.me/jxbplug) — канал с плагинами. владелец: [@jaxbastard](https://t.me/jaxbastard)
-- [ExteraGram sources](https://github.com/Podyshka1/extera-full-decompiled) — содержит декомпилированный ExteraGram 12.5.1 и 12.9.0 через jadx
+- [ExteraGram sources](https://github.com/exteraSquad/exteraGram) — содержит сурсы ExteraGram
  
 EN:
 - [ExteraGram plugins docs](https://plugins.exteragram.app/docs) — official plugin API documentation
 - [exteraSquad/plugins-pysdk-builds](https://github.com/exteraSquad/plugins-pysdk-builds) — official repository for Python SDK builds and type stubs (1.4.6.x)
 - [Telegram for Android source](https://github.com/DrKLO/Telegram/tree/009e97356f966bb81eceba113d210230bf383122) — base for understanding internals
 - [plugins channel](https://t.me/jxbplug) — channel with plugins. owner: [@jaxbastard](https://t.me/jaxbastard)
-- [ExteraGram sources](https://github.com/Podyshka1/extera-full-decompiled) — contains decompiled ExteraGram 12.5.1 and 12.9.0 via jadx
+- [ExteraGram sources](https://github.com/exteraSquad/exteraGram) — contains ExteraGram sources
 
 ---
 
