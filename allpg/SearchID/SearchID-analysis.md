@@ -1,324 +1,251 @@
 # Анализ разработки плагина SearchID
-> Поиск плагинов ExteraGram по ID
-> Версия плагина: 1.0.1
-> Источники: исходники plugins (decompiled code), runtime-классы ExteraGram
+
+> **Назначение:** добавляет поиск плагинов ExteraGram по ID через штатный поиск менеджера плагинов.
+>
+> **Версия плагина:** 1.0.2
 
 ---
 
-## Архитектура: как это работает в целом
+## 1. Краткое описание
 
-Плагин не меняет сам механизм поиска. ExteraGram уже умеет фильтровать список плагинов по названию, поэтому SearchID встраивается в существующий процесс `PluginsActivity.fillItems()`.
+### Что делает плагин
 
-Основная идея — **два хука**:
+SearchID позволяет находить установленные плагины по их идентификатору (`__id__`), а не только по отображаемому названию.
 
-1. хук на `PluginsActivity.fillItems()` — получает текущий поисковый запрос;
-2. хук на `Plugin.getName()` — временно изменяет возвращаемое имя плагина, если его ID соответствует запросу.
+Плагин не создаёт собственный экран, список результатов или поисковую систему. Он подключается к построению штатного списка плагинов и на время этой операции изменяет результат `Plugin.getName()`: если введённый запрос встречается в ID, метод возвращает строку вида `Название ID`.
 
-За счёт этого не нужно самостоятельно создавать список результатов или повторять внутреннюю логику фильтрации ExteraGram.
+За счёт этого ID становится дополнительным текстом, по которому может сработать существующая фильтрация менеджера плагинов.
+
+### Какую проблему решает
+
+Названия плагинов не всегда совпадают с их ID. Например, пользователь может знать технический идентификатор `animtou`, но в списке видеть название `Анимированные касания`. Штатный поиск по отображаемому названию не обязан находить такой плагин по ID.
+
+SearchID добавляет возможность искать по полному ID и его части, не реализуя отдельный алгоритм отбора элементов.
+
+### Основной принцип реализации
+
+Используются два Xposed-хука:
+
+1. `PluginsActivity.fillItems` — перед выполнением метода плагин читает приватное поле `query` и сохраняет нормализованный запрос в собственном состоянии.
+2. `Plugin.getName` — после оригинального вызова плагин получает ID объекта. Если запрос является подстрокой ID, результат `getName()` заменяется на `Название ID`.
+
+После завершения `fillItems` поисковое состояние очищается. Вне этого участка вызовы `getName()` не изменяются.
+
+### Границы ответственности
+
+Плагин:
+
+- добавляет ID как дополнительный источник совпадения при поиске плагинов;
+- использует существующие классы и Xposed-механизм ExteraGram;
+- временно изменяет возвращаемое значение `getName()` во время построения списка;
+- показывает копируемое сообщение с traceback при ошибках.
+
+Плагин **не**:
+
+- создаёт собственный поиск или список результатов;
+- меняет сохранённое имя, ID или метаданные плагина;
+- записывает ID в настройки или постоянное хранилище;
+- обращается к сети;
+- изменяет содержимое сообщений, чатов или аккаунтов;
+- добавляет отдельный экран настроек.
+
+---
+
+## 2. Область анализа и совместимость
+
+| Параметр | Значение | Примечание |
+|---|---|---|
+| Версия плагина | `1.0.2` | Указана в `__version__` |
+| ID плагина | `SearchID` | Указан в `__id__` |
+| ExteraGram | `>=13.2.2` | Ограничение из `__app_version__` |
+| AyuGram | Не заявлена | Используются классы с пакетом `com.exteragram.messenger` |
+| Plugin SDK | В текущем `main` исходников ETG указан `1.4.6.5` | Плагин не задаёт собственный `__sdk_version__` |
+| Python runtime | `3.11` | Указан в Gradle-конфигурации Python SDK ExteraGram |
+| Android API / ABI | Отдельных требований плагина нет | Нет собственного native-кода и прямых ABI-зависимостей |
+
+`__app_version__ = ">=13.2.2"` означает минимальное требование, а не ограничение ровно на 13.2.2. Оно не доказывает совместимость со всеми последующими версиями: при изменении внутренних классов, полей или методов хуки могут перестать находить нужные точки.
+
+### Что входит в анализ
+
+- полный исходник `SearchID-1.0.2.plugin`;
+- используемые классы `BasePlugin` и `MethodHook`;
+- реализация `hook_method()` и `unhook_method()` в SDK;
+- реализация `find_class()` и `get_private_field()`;
+- реализация `android_utils.log()` и `copy_to_clipboard()`;
+- реализация `BulletinHelper.show_with_button()`;
+- метаданные SDK и настройка Python runtime в исходниках ExteraGram;
+- ресурс `R.raw.error`, на который ссылается плагин;
+- официальная документация по метаданным, хукам, Reflection, Bulletin и логированию.
+
+### Что не входит в анализ
+
+В доступных файлах публичного репозитория ExteraGram удалось открыть исходники SDK и связанные ресурсы, но не удалось получить декларации самих `PluginsActivity` и `Plugin` из приложения. Поэтому здесь не приводятся выдуманные полные Java/Kotlin-сигнатуры этих методов и не утверждается, что их объявления были повторно сверены по файлу класса в ветке `main`.
+
+Плагин использует эти классы и методы напрямую по именам, а его рабочее поведение подтверждено владельцем плагина. Для самостоятельного повторного подтверждения внутренней реализации приложения нужен соответствующий исходник или APK целевой сборки 13.2.2, доступный для просмотра через JADX.
+
+---
+
+## 3. Использованные источники
+
+### Исходник плагина
+
+| Файл | Что проверялось |
+|---|---|
+| `SearchID-1.0.2.plugin` | Метаданные, импорты, хуки, состояние, обработка ошибок, регистрация и снятие хуков |
+
+### Исходники ExteraGram
+
+| Файл | Что проверялось |
+|---|---|
+| [`plugins-pysdk/src/base_plugin.py`](https://github.com/exteraSquad/exteraGram/blob/main/plugins-pysdk/src/base_plugin.py) | `BasePlugin`, `MethodHook`, `hook_method()`, `hook_all_methods()`, `unhook_method()`, учёт хуков в `PluginsController` |
+| [`plugins-pysdk/src/hook_utils.py`](https://github.com/exteraSquad/exteraGram/blob/main/plugins-pysdk/src/hook_utils.py) | Реальное поведение `find_class()` и `get_private_field()` |
+| [`plugins-pysdk/src/android_utils.py`](https://github.com/exteraSquad/exteraGram/blob/main/plugins-pysdk/src/android_utils.py) | Реализация `log()`, `copy_to_clipboard()` и UI-thread helper |
+| [`plugins-pysdk/src/ui/bulletin.py`](https://github.com/exteraSquad/exteraGram/blob/main/plugins-pysdk/src/ui/bulletin.py) | Реализация `show_with_button()` и передача callback в Android Bulletin |
+| [`plugins-pysdk/src/_sdk_version.py`](https://github.com/exteraSquad/exteraGram/blob/main/plugins-pysdk/src/_sdk_version.py) | Версия SDK, указанная непосредственно в исходном файле |
+| [`TMessagesProj/gradle/extera-python.gradle`](https://github.com/exteraSquad/exteraGram/blob/main/TMessagesProj/gradle/extera-python.gradle) | Версия Python и конфигурация Python runtime |
+| [`TMessagesProj/src/main/res/raw/error.json`](https://github.com/exteraSquad/exteraGram/blob/main/TMessagesProj/src/main/res/raw/error.json) | Наличие Lottie-ресурса ошибки, используемого через `R.raw.error` |
+
+### Документация ExteraGram
+
+| Страница | Что сверялось |
+|---|---|
+| [Plugin Class](https://plugins.exteragram.app/docs/plugin-class) | Метаданные плагина и смысл `__app_version__` |
+| [Xposed Method Hooking](https://plugins.exteragram.app/docs/xposed-hooking) | `MethodHook`, `param.getResult()`, `param.setResult()`, `hook_method()` и снятие хуков |
+| [Hook Utilities](https://plugins.exteragram.app/docs/hook-utils) | Назначение `find_class()` и `get_private_field()` |
+| [Bulletin Helper](https://plugins.exteragram.app/docs/bulletin-helper) | Аргументы `show_with_button()` и автоматический переход в UI-thread |
+| [Logging](https://plugins.exteragram.app/docs/logging) | Разница между новым `self.logger` и legacy `android_utils.log()` |
+
+### Важное расхождение документации и исходников SDK
+
+В текущем просмотренном файле [`_sdk_version.py`](https://github.com/exteraSquad/exteraGram/blob/main/plugins-pysdk/src/_sdk_version.py) указана версия SDK `1.4.6.5`. Страница Introduction документации показывает baseline `1.4.4.3`. Для описания фактической реализации SDK в этом анализе использована версия из исходного файла репозитория; документация использована для объяснения публичного API и сопоставления его поведения.
+
+Плагин не задаёт `__sdk_version__`, поэтому отдельного требования к версии SDK в его метаданных нет.
+
+### Ограничение проверки классов приложения
+
+Точные объявления `com.exteragram.messenger.plugins.ui.PluginsActivity` и `com.exteragram.messenger.plugins.Plugin` в доступной части публичного дерева исходников открыть не удалось. Из-за этого в анализе фиксируются используемые имена методов, полей и фактическая техника обращения к ним из плагина, но не придумываются сигнатуры, модификаторы доступа или детали внутренней фильтрации, которые не подтверждены доступным файлом приложения.
+
+---
+
+## 4. Пользовательское поведение
+
+| Действие пользователя | Реакция плагина | Видимый результат |
+|---|---|---|
+| Вводит полный ID плагина | Запрос сравнивается с ID каждого плагина во время построения списка | Плагин может попасть в результаты по ID |
+| Вводит часть ID | Выполняется проверка вхождения подстроки | Совпадения по части ID также находятся |
+| Вводит ID в другом регистре | Запрос и ID приводятся к нижнему регистру | Регистр не влияет на совпадение |
+| Ищет по обычному названию | Результат `getName()` остаётся исходным, если ID не совпал | Обычный поиск по названию продолжает работать штатно |
+| Вводит запрос с пробелами по краям | `strip()` убирает пробелы по краям | Сравнение выполняется по очищенному запросу |
+| Плагин не имеет ID или имени (`None`) | Обработчик прекращает изменение результата | Исходное значение не подменяется |
+| Поисковый запрос пустой | `GetNameHook` сразу завершает работу | ID не добавляется к имени |
+| Происходит ошибка загрузки или работы хука | Формируется traceback, запись отправляется в log, показывается Bulletin | Пользователь видит сообщение с кнопкой `Copy` |
+
+### Основной сценарий — поиск по ID
+
+1. Пользователь открывает менеджер плагинов и вводит ID или его часть.
+2. ExteraGram вызывает `PluginsActivity.fillItems()`.
+3. Хук до оригинального метода читает `query` из экземпляра Activity.
+4. Во время выполнения `fillItems()` вызывается `Plugin.getName()`.
+5. После оригинального `getName()` хук получает ID текущего объекта.
+6. Если запрос содержится в ID, результат меняется на `Название ID`.
+7. Штатная обработка списка получает строку, содержащую ID, и может использовать её как дополнительное совпадение.
+8. После завершения `fillItems()` поисковое состояние очищается.
+
+### Сценарий — поиск по названию
+
+1. Пользователь вводит название.
+2. `fillItems()` сохраняет запрос.
+3. `GetNameHook` сравнивает запрос с ID.
+4. Если ID не содержит запрос, хук не вызывает `param.setResult()`.
+5. Оригинальное имя остаётся результатом `getName()`, и поиск по названию продолжает обрабатываться клиентом.
+
+---
+
+## 5. Архитектура: как это работает в целом
+
+SearchID использует штатный поиск и добавляет в его входные данные ID плагина.
+
+### Общая схема
 
 ```text
 Пользователь вводит запрос
         │
         ▼
-PluginsActivity.query
+PluginsActivity.fillItems()
+        │
+        ├── before_hooked_method
+        │       ├── searching = True
+        │       └── query = get_private_field(thisObject, "query")
         │
         ▼
-fillItems()
+Оригинальное построение списка плагинов
         │
-        ├── устанавливаю searching = True
+        ▼
+Plugin.getName()
         │
-        └── сохраняю query
-                │
-                ▼
-        Plugin.getName()
-                │
-                ├── получаю обычное имя
-                ├── получаю plugin.getId()
-                │
-                └── если query содержится в ID:
-                        name → "name id"
-                                │
-                                ▼
-                     штатный поиск ExteraGram
-                     видит совпадение
+        ├── оригинальный метод возвращает имя
+        │
+        └── after_hooked_method
+                ├── проверить searching и query
+                ├── получить Plugin.getId()
+                └── если query in id:
+                        param.setResult("Название ID")
+        │
+        ▼
+Штатная обработка списка
+        │
+        ▼
+PluginsActivity.fillItems() завершён
+        │
+        ▼
+after_hooked_method
+        ├── searching = False
+        └── query = ""
 ```
 
-После завершения `fillItems()` состояние поиска сбрасывается.
+### Компоненты и ответственность
 
----
-
-## Ключевые решения и нюансы
-
-### 1. Используется существующий поиск ExteraGram
-
-Вместо того чтобы полностью перехватывать построение списка плагинов, плагин использует уже существующий механизм `PluginsActivity`.
-
-В исходном коде логика поиска основана на имени плагина:
-
-```java
-plugin.getName().toLowerCase().contains(query.toLowerCase())
-```
-
-Достаточно сделать так, чтобы во время поиска `getName()` возвращал строку, содержащую ID:
-
-| ID | Name |
-|---|---|
-| `SearchID` | `SearchID` |
-| `cactuslib_mini` | `CactusLib Mini` |
-
-Если пользователь вводит:
-
-```text
-cactuslib_mini
-```
-
-штатный фильтр ExteraGram получает имя:
-
-```text
-CactusLib Mini cactuslib_mini
-```
-
-и считает плагин подходящим.
-
-Так поиск по ID добавляется без замены самого фильтра.
-
----
-
-### 2. Хук на `fillItems` — получение поискового запроса
-
-Используется reflection Chaquopy:
-
-```python
-activity_reflector = activity_class._chaquopy_reflector
-
-fill_methods = activity_reflector.getMethods("fillItems")
-```
-
-`_chaquopy_reflector` здесь важен: обычные Java reflection-методы недоступны непосредственно на Python-обёртке класса так, как они доступны на обычном `java.lang.Class`.
-
-`getMethods("fillItems")` возвращает настоящий `java.lang.reflect.Method`, который можно передать в:
-
-```python
-self.hook_method(...)
-```
-
-Найденный метод становится точкой входа для `FillItemsHook`.
-
----
-
-### 3. Почему `query` читается из `param.thisObject`
-
-`fillItems()` вызывается на конкретном экземпляре `PluginsActivity`. Поэтому в `before_hooked_method` запрос берётся прямо из него:
-
-```python
-query = get_private_field(param.thisObject, "query")
-```
-
-и сохраняется в состоянии плагина:
-
-```python
-self.plugin.query = "" if query is None else str(query).strip().lower()
-```
-
-Одновременно устанавливается:
-
-```python
-self.plugin.searching = True
-```
-
-Это состояние нужно второму хуку — `Plugin.getName()`.
-
----
-
-### 4. `before_hooked_method` и `after_hooked_method`
-
-На `fillItems()` используются оба этапа.
-
-**Перед** оригинальным методом сохраняется поисковый запрос:
-
-```python
-def before_hooked_method(self, param):
-    ...
-```
-
-**После** завершения состояние сбрасывается:
-
-```python
-def after_hooked_method(self, param):
-    self.plugin.searching = False
-    self.plugin.query = ""
-```
-
-Это важно, потому что `Plugin.getName()` вызывается не только непосредственно для поиска, а имена плагинов не должны меняться во всех остальных местах приложения.
-
-Поэтому условие второго хука начинается с:
-
-```python
-if not self.plugin.searching or not self.plugin.query:
-    return
-```
-
----
-
-### 5. Хук на `Plugin.getName()`
-
-Второй хук устанавливается на:
-
-```python
-plugin_class._chaquopy_reflector.getMethods("getName")
-```
-
-и срабатывает **после** оригинального `getName()`.
-
-Сначала берётся обычное имя:
-
-```python
-name = param.getResult()
-```
-
-затем ID:
-
-```python
-plugin_id = param.thisObject.getId()
-```
-
-Если поисковый запрос находится в ID:
-
-```python
-if self.plugin.query in str(plugin_id).lower():
-    param.setResult("{} {}".format(name, plugin_id))
-```
-
-результат `getName()` подменяется.
-
-Например:
-
-| ID | Name | Запрос | Результат `getName()` |
+| Компонент | Ответственность | Вход | Выход / эффект |
 |---|---|---|---|
-| `zwylib` | `ZwyLib` | `zwylib` | `ZwyLib zwylib` |
+| `SearchIDPlugin` | Инициализация, регистрация хуков, хранение состояния и cleanup | Lifecycle ExteraGram | Установленные хуки и состояние поиска |
+| `FillItemsHook` | Получение запроса до построения списка и очистка после него | Экземпляр `PluginsActivity` | `searching` и `query` в экземпляре плагина |
+| `GetNameHook` | Добавление ID к результату имени при совпадении | Экземпляр `Plugin`, исходный результат `getName()` | Изменённый результат `getName()` только во время поиска |
+| `_show_error()` | Логирование traceback и показ копируемого Bulletin | Текст ошибки и исключение | Запись в log и сообщение с кнопкой `Copy` |
+| SDK `BasePlugin` | Регистрация и снятие Xposed-хуков | Java `Member`, обработчик `MethodHook` | Hook handle `XC_MethodHook.Unhook` |
+| SDK `hook_utils` | Поиск Java-класса и чтение приватного поля | Имя класса / Java object и имя поля | Java Class или значение поля |
 
-После этого штатный поиск ExteraGram видит совпадение.
-
----
-
-### 6. Почему не перехватывается сам результат фильтра
-
-Менять `fillItems()` после формирования списка не нужно.
-
-Если бы список приходилось вручную дополнять или урезать, пришлось бы повторять внутреннюю структуру `UItem`, сортировку, разделители и другие детали `PluginsActivity`.
-
-Вместо этого изменяются только данные, которые уже использует оригинальный фильтр. Получается минимальное вмешательство:
-
-```text
-Plugin.getName()
-      │
-      └── временно → "Name ID"
-                    │
-                    ▼
-             оригинальный filter
-                    │
-                    ▼
-             обычный список
-```
-
-Сам `PluginsActivity` при этом продолжает работать своим кодом.
+Главная архитектурная идея — расширить значение, которое уже получает штатная логика, вместо того чтобы заменять само построение списка.
 
 ---
 
-### 7. R8 и runtime-методы
+## 6. Точки интеграции с ExteraGram / Android
 
-В исходном коде `PluginsActivity` фильтр находится в Kotlin-generated lambda:
+### Реестр точек интеграции
 
-```text
-lambda$fillItems$1
-```
+| Класс | Метод / поле | Использование в SearchID | Доступ |
+|---|---|---|---|
+| `com.exteragram.messenger.plugins.ui.PluginsActivity` | `fillItems` | Точка входа для получения текущего запроса и граница, внутри которой действует флаг поиска | Метод находится через Reflection |
+| `com.exteragram.messenger.plugins.ui.PluginsActivity` | `query` | Приватное поле с поисковым запросом | Читается через `get_private_field()` |
+| `com.exteragram.messenger.plugins.Plugin` | `getName` | Метод, результат которого временно изменяется | Метод находится через Reflection |
+| `com.exteragram.messenger.plugins.Plugin` | `getId` | Получение ID экземпляра плагина | Вызывается через `param.thisObject` |
+| `org.telegram.messenger.R` | `raw.error` | Иконка ошибки для Bulletin | Android resource ID |
 
-Однако в собранном APK этот метод оптимизируется R8, поэтому рассчитывать на исходное имя в runtime нельзя.
+### `PluginsActivity.fillItems`
 
-Вместо этого используются реальные runtime-методы:
+**Назначение в плагине:** получить активный поисковый запрос до обработки списка и сбросить состояние после её окончания.
 
-```text
-PluginsActivity.fillItems()
-Plugin.getName()
-```
-
-Плагин не зависит от конкретного имени сгенерированной Kotlin lambda.
-
----
-
-### 8. Почему R8 lambda не используется как основная точка входа
-
-В runtime `PluginsActivity` содержит несколько методов вида:
-
-```text
-$r8$lambda$...
-```
-
-Но наличие нескольких синтетических методов само по себе не даёт надёжной привязки к конкретной части `fillItems()`. Кроме того, R8 может менять их имена и структуру при оптимизации.
-
-`fillItems()` и `Plugin.getName()` — более подходящие точки:
-
-- первый отвечает за построение списка;
-- второй возвращает значение, которое непосредственно участвует в фильтрации.
-
-Поэтому они используются вместо привязки к synthetic lambda.
-
----
-
-### 9. Reflection через `_chaquopy_reflector`
-
-Для получения методов используется:
+**Получение метода:**
 
 ```python
-activity_class._chaquopy_reflector
-plugin_class._chaquopy_reflector
-```
-
-Затем:
-
-```python
-fill_methods = activity_reflector.getMethods("fillItems")
-get_name_methods = plugin_reflector.getMethods("getName")
-```
-
-Это отличается от обычного:
-
-```python
-activity_class.fillItems
-```
-
-который возвращает Chaquopy `JavaMethod`, а не объект `java.lang.reflect.Method`, ожидаемый `hook_method`.
-
-Поэтому для регистрации хуков используется именно результат `getMethods()`.
-
----
-
-### 10. Приоритет хуков
-
-| Метод | `priority` | Зачем |
-|---|---|---|
-| `fillItems` | `100` | `query` нужно получить до выполнения основной логики построения списка |
-| `getName` | `5` | результат изменяется уже после выполнения оригинального метода |
-
-В сам результат `fillItems` плагин не вмешивается.
-
----
-
-### 11. Повторная загрузка хука
-
-У SearchID есть отдельная особенность lifecycle: после повторного запуска приложения обычный:
-
-```python
-self.hook_method(
-    fill_methods[0],
-    FillItemsHook(self),
-    priority=100,
+activity_class = find_class(
+    "com.exteragram.messenger.plugins.ui.PluginsActivity"
 )
+
+activity_reflector = activity_class._chaquopy_reflector
+fill_methods = activity_reflector.getMethods("fillItems")
 ```
 
-может вернуть `None`, хотя при первой загрузке тот же метод успешно перехватывается.
-
-Поэтому оставлен fallback:
+**Регистрация:**
 
 ```python
 fill_hook = self.hook_method(
@@ -326,273 +253,798 @@ fill_hook = self.hook_method(
     FillItemsHook(self),
     priority=100,
 )
-
-if not fill_hook:
-    fill_hook = self.hook_all_methods(
-        activity_class,
-        "fillItems",
-        FillItemsHook(self),
-    )
 ```
 
-Первая попытка использует конкретный `Method`, а при повторной регистрации используется API `hook_all_methods()`.
+Плагин берёт первый элемент результата `getMethods("fillItems")`. Он не выбирает перегрузку по типам аргументов и не проверяет сигнатуру отдельно.
 
-Это относится именно к регистрации хука и не меняет саму логику поиска.
+Точную Java/Kotlin-сигнатуру `fillItems` здесь намеренно не указываю: декларацию класса из исходников приложения не удалось открыть. В самом плагине метод выбирается по имени через Chaquopy reflector, а возвращённый объект передаётся в `BasePlugin.hook_method()`.
+
+### Поле `PluginsActivity.query`
+
+**Назначение:** источник текущего запроса поиска.
+
+```python
+query = get_private_field(param.thisObject, "query")
+self.plugin.query = "" if query is None else str(query).strip().lower()
+```
+
+`param.thisObject` — экземпляр, на котором был вызван Java-метод. Поэтому плагин читает поле у текущего `PluginsActivity`, а не у класса целиком.
+
+Поле читается, но не изменяется. Плагин не заменяет содержимое поискового поля и не вмешивается во ввод пользователя.
+
+### `Plugin.getName`
+
+**Назначение:** точка, через которую плагин расширяет текст для сопоставления с запросом.
+
+```python
+plugin_reflector = plugin_class._chaquopy_reflector
+get_name_methods = plugin_reflector.getMethods("getName")
+```
+
+Хук работает после оригинального метода, поэтому получает уже готовый результат через `param.getResult()`.
+
+```python
+name = param.getResult()
+```
+
+При совпадении ID новое значение передаётся через `param.setResult()`:
+
+```python
+param.setResult("{} {}".format(name, plugin_id))
+```
+
+Плагин не меняет поле с именем объекта. Он изменяет только результат конкретного вызова метода.
+
+### `Plugin.getId`
+
+ID получается у того же Java-объекта, на котором вызван `getName()`:
+
+```python
+plugin_id = param.thisObject.getId()
+```
+
+Затем значение явно преобразуется в Python-строку:
+
+```python
+plugin_id = str(plugin_id)
+```
+
+Это позволяет выполнить строковое сравнение независимо от исходного Python-представления Java-значения.
+
+### `R.raw.error`
+
+В коде используется:
+
+```python
+jclass("org.telegram.messenger.R").raw.error
+```
+
+В исходниках ExteraGram присутствует ресурс `TMessagesProj/src/main/res/raw/error.json`. SDK Bulletin принимает `R.raw` resource ID как Lottie-иконку.
+
+### Ограничения точек интеграции
+
+- `PluginsActivity`, `Plugin`, `fillItems`, `query`, `getName` и `getId` — внутренние элементы приложения, а не независимый публичный API самого плагина.
+- Переименование класса, поля или метода может сломать Reflection.
+- Выбор `fill_methods[0]` и `get_name_methods[0]` зависит от порядка результата reflector. Если появятся перегрузки или изменится порядок методов, нужно повторно проверить, какой именно метод получает хук.
+- В текущем коде нет проверки типов параметров найденного метода.
+- Минимальная версия `>=13.2.2` не гарантирует, что внутренние имена сохранятся во всех будущих сборках.
 
 ---
 
-### 12. Хранение hook handles
+## 7. Хуки и Reflection
 
-Оба установленных хука сохраняются:
+### Реестр хуков
+
+| № | Класс и метод | Тип хука | Callback | Priority | Назначение | Где снимается |
+|---:|---|---|---|---:|---|---|
+| 1 | `PluginsActivity.fillItems` | before + after | `FillItemsHook` | `100` | Считать запрос до выполнения и очистить состояние после | `on_plugin_unload()` через `_unhook_all()` |
+| 2 | `Plugin.getName` | after | `GetNameHook` | `5` | Изменить результат, если запрос содержится в ID | `on_plugin_unload()` через `_unhook_all()` |
+
+### Получение Java-классов
 
 ```python
-self.hooks = []
+activity_class = find_class(
+    "com.exteragram.messenger.plugins.ui.PluginsActivity"
+)
+plugin_class = find_class(
+    "com.exteragram.messenger.plugins.Plugin"
+)
 ```
 
-После успешной регистрации:
+`find_class()` из SDK вызывает `jclass(class_name)`. Если класс не удаётся найти, helper записывает ошибку в log и возвращает `None`. Плагин проверяет оба результата и прекращает инициализацию с `RuntimeError`, если хотя бы один класс отсутствует.
+
+### Получение методов через Chaquopy reflector
+
+```python
+activity_reflector = activity_class._chaquopy_reflector
+plugin_reflector = plugin_class._chaquopy_reflector
+
+fill_methods = activity_reflector.getMethods("fillItems")
+get_name_methods = plugin_reflector.getMethods("getName")
+```
+
+Здесь используется `_chaquopy_reflector`, а не прямой вызов `getDeclaredMethod()` на объекте класса.
+
+Документация SDK показывает обычный путь через `find_class()` и Java Reflection (`getDeclaredMethod()`), а `BasePlugin.hook_method()` в исходниках принимает объект типа `java.lang.reflect.Member`. SearchID использует Chaquopy reflector для получения метода, после чего передаёт первый найденный элемент в `hook_method()`.
+
+`_chaquopy_reflector` — внутренний механизм Chaquopy-обёртки, а не отдельный публичный helper из `hook_utils.py`. Его нельзя описывать как универсальный API ExteraGram для новых плагинов без повторной проверки. В SearchID этот способ сохранён, поскольку он используется текущей рабочей реализацией.
+
+### Почему используется `MethodHook`
+
+Оба обработчика наследуются от `MethodHook`:
+
+```python
+class FillItemsHook(MethodHook):
+    ...
+```
+
+```python
+class GetNameHook(MethodHook):
+    ...
+```
+
+Это позволяет использовать разные фазы одного вызова:
+
+- `before_hooked_method()` получает поле `query` перед оригинальным `fillItems()`;
+- `after_hooked_method()` очищает временное состояние после `fillItems()`;
+- `after_hooked_method()` у `GetNameHook` читает оригинальный результат `getName()` и при необходимости заменяет его.
+
+Для `getName()` нужен именно `after`, потому что `param.getResult()` содержит результат оригинального метода только после его выполнения. Затем `param.setResult()` заменяет значение, которое будет возвращено вызывающему коду.
+
+### Приоритеты
+
+- `fillItems`: `priority=100`.
+- `getName`: `priority=5`.
+
+Эти значения заданы в самом плагине. Первый хук должен подготовить состояние до того, как начнётся обработка списка. Второй изменяет результат после вызова оригинального метода. При взаимодействии с чужими хуками итоговый порядок также зависит от их приоритетов.
+
+### Регистрация
+
+`BasePlugin.hook_method()` в исходниках SDK:
+
+- принимает `java.lang.reflect.Member`;
+- создаёт Java callback для `MethodHook`;
+- вызывает `XposedBridge.hookMethod()`;
+- регистрирует полученный handle в `PluginsController`;
+- возвращает `XC_MethodHook.Unhook`;
+- возвращает `None`, если регистрация завершилась неудачно.
+
+SearchID сохраняет каждый успешный handle отдельно:
 
 ```python
 self.hooks.append(fill_hook)
 self.hooks.append(name_hook)
 ```
 
-Это позволяет снять именно те hook handles, которые были получены при текущей загрузке плагина.
+Плагин не использует fallback на `hook_all_methods()`. Это соответствует текущему варианту 1.0.2: каждый из двух найденных методов регистрируется через `hook_method()` как отдельный Java `Member`.
+
+### Снятие хуков
+
+```python
+def _unhook_all(self):
+    remaining = []
+    for hook in reversed(self.hooks):
+        try:
+            self.unhook_method(hook)
+        except Exception as exc:
+            remaining.append(hook)
+            log(
+                "SearchID: не удалось снять хук: "
+                f"{exc}\n{traceback.format_exc()}"
+            )
+    self.hooks = list(reversed(remaining))
+```
+
+Хуки снимаются в обратном порядке относительно регистрации. Ошибка снятия одного хука не прерывает попытку снять остальные. Не снятые handles сохраняются в `self.hooks`, а ошибка записывается в log.
+
+В SDK `unhook_method()` вызывает `PluginsController.removeXposedHook()`. SDK также учитывает установленные хуки в контроллере плагинов; SearchID дополнительно хранит собственные handles, чтобы явно управлять снятием и обработать частичную инициализацию.
 
 ---
 
-### 13. `on_plugin_unload`
+## 8. Подробный разбор ключевой логики
 
-При выгрузке плагин проходит по сохранённым хукам:
+### 8.1. Сохранение поискового состояния
+
+**Задача:** сделать текущий запрос доступным для хука `Plugin.getName()` только во время построения списка.
 
 ```python
-for hook in self.hooks:
+def before_hooked_method(self, param):
     try:
-        self.unhook_method(hook)
-    except Exception:
-        pass
+        self.plugin.searching = True
+        query = get_private_field(param.thisObject, "query")
+        self.plugin.query = "" if query is None else str(query).strip().lower()
+    except Exception as exc:
+        self.plugin.searching = False
+        self.plugin.query = ""
+        _show_error("SearchID: ошибка чтения поиска", exc)
 ```
 
-После этого список очищается:
+**Как работает:**
+
+1. Включает флаг `searching`.
+2. Передаёт текущий объект Activity в `get_private_field()`.
+3. Читает поле `query`.
+4. Преобразует запрос в строку, удаляет пробелы по краям и приводит к нижнему регистру.
+5. Если значение равно `None`, записывает пустую строку.
+6. При исключении, которое дошло до `except`, сбрасывает оба поля и показывает ошибку.
+
+**Почему используется флаг `searching`:**
+
+Хук `Plugin.getName()` установлен на метод класса `Plugin` и может срабатывать в других местах приложения. Флаг ограничивает изменение результата только теми вызовами, которые происходят в период `fillItems()`.
+
+**Важная особенность SDK helper:**
+
+`get_private_field()` сам перехватывает ошибки Reflection и возвращает `None`. Поэтому если поле `query` не найдено или недоступно, исключение обычно не попадёт во внешний `except` SearchID. В этом случае запрос станет пустым, а хук `getName` не будет менять имена. Для этого helper отсутствие значения и ошибка чтения не различаются по возвращаемому результату.
+
+### 8.2. Изменение результата `getName()`
+
+**Задача:** добавить ID к строке только при совпадении поискового запроса с идентификатором.
 
 ```python
-self.hooks = []
+def after_hooked_method(self, param):
+    try:
+        if not self.plugin.searching or not self.plugin.query:
+            return
+
+        plugin_id = param.thisObject.getId()
+        if plugin_id is None:
+            return
+
+        name = param.getResult()
+        if name is None:
+            return
+
+        plugin_id = str(plugin_id)
+        if self.plugin.query in plugin_id.lower():
+            param.setResult("{} {}".format(name, plugin_id))
+    except Exception as exc:
+        _show_error("SearchID: ошибка поиска", exc)
 ```
 
-Также сбрасывается состояние поиска:
+**Как работает:**
+
+1. Проверяет, что сейчас выполняется построение списка и запрос не пустой.
+2. Получает ID у того же объекта `Plugin`, на котором был вызван `getName()`.
+3. Получает оригинальный результат `getName()`.
+4. Пропускает изменение, если ID или имя отсутствуют.
+5. Преобразует ID в строку.
+6. Проверяет вхождение нормализованного запроса в ID в нижнем регистре.
+7. При совпадении заменяет результат на `Название ID`.
+
+Если совпадения нет, `param.setResult()` не вызывается и остаётся оригинальный результат `getName()`.
+
+### 8.3. Семантика поиска
+
+Сравнение выполняется как проверка подстроки:
 
 ```python
-self.searching = False
-self.query = ""
+self.plugin.query in plugin_id.lower()
 ```
 
-Так после выгрузки объект плагина не остаётся в состоянии активного поиска.
+Это не точное равенство. Поэтому запрос `cactus` найдёт ID `cactuslib_mini`, а запрос `cactuslib_mini` найдёт его полностью.
+
+Обе стороны сравнения приводятся к нижнему регистру. В начале запроса дополнительно удаляются пробелы по краям.
+
+Запрос не разбивается на отдельные слова. Например, строка `cactus mini` будет искаться как одна подстрока ID и не эквивалентна одновременному поиску двух частей.
+
+### 8.4. Почему не реализуется собственная фильтрация
+
+SearchID не получает коллекцию установленных плагинов, не строит `UItem` и не повторяет код менеджера.
+
+Вместо этого он меняет данные, которые использует штатный код. Такой подход уменьшает объём вмешательства: плагину не нужно поддерживать собственную копию сортировки, создания строк и обновления списка.
+
+При этом подмена выполняется на время вызова `getName()` внутри активного поиска. Если другой код вызывает `getName()` вне этого контекста, имя остаётся исходным.
+
+Важное следствие: во время активного `fillItems()` строку `Название ID` получает любой внутренний потребитель результата `getName()` в этом вызове, не только фильтр. Точное использование результата внутри конкретной реализации `PluginsActivity` зависит от кода клиента.
+
+### 8.5. Получение метода для хука
+
+**Задача:** передать SDK объект метода, который можно зарегистрировать через Xposed.
+
+```python
+activity_reflector = activity_class._chaquopy_reflector
+fill_methods = activity_reflector.getMethods("fillItems")
+```
+
+Далее используется `fill_methods[0]`. Если список пустой, плагин выбрасывает `RuntimeError`.
+
+Аналогично выбирается первый метод `getName()`.
+
+**Ограничение:** в плагине нет проверки количества методов или сигнатуры каждого найденного элемента. При изменении набора перегрузок этот участок нужно проверить повторно, а не предполагать, что первый элемент всегда останется нужным.
+
+### 8.6. Частичная регистрация и откат
+
+**Задача:** не оставлять первый хук установленным, если второй хук зарегистрировать не удалось.
+
+После успешной регистрации `fillItems` его handle сразу добавляется в `self.hooks`. Если регистрация `getName` завершается ошибкой или возвращает `None`, выполнение попадает в общий `except`:
+
+```python
+except Exception as exc:
+    self._unhook_all()
+    _show_error("SearchID: ошибка загрузки", exc)
+```
+
+`_unhook_all()` пытается снять все handles, которые уже были сохранены. Таким образом, сбой второй регистрации не оставляет первый хук без попытки очистки.
+
+Если снятие какого-либо хука тоже завершается ошибкой, его handle остаётся в списке для последующей попытки снятия при вызове cleanup.
 
 ---
 
-### 14. Почему состояние хранится в экземпляре плагина
+## 9. Состояние и структура данных
 
-Глобальные переменные для `searching` и `query` не используются. Они относятся непосредственно к текущему экземпляру `SearchIDPlugin`.
+| Переменная | Тип | Начальное значение | Где изменяется | Где читается | Срок жизни |
+|---|---|---|---|---|---|
+| `self.hooks` | `list` из hook handles | `[]` | `on_plugin_load()`, `_unhook_all()` | `_unhook_all()` | Время жизни экземпляра плагина |
+| `self.searching` | `bool` | `False` | `FillItemsHook.before_hooked_method()`, `after_hooked_method()`, `on_plugin_unload()` | `GetNameHook.after_hooked_method()` | Один цикл построения списка |
+| `self.query` | `str` | `""` | `FillItemsHook.before_hooked_method()`, `after_hooked_method()`, `on_plugin_unload()` | `GetNameHook.after_hooked_method()` | Один цикл построения списка |
 
-Хук получает ссылку на плагин:
+### Где хранится источник истины
 
-```python
-FillItemsHook(self)
-GetNameHook(self)
-```
+Сам поисковый запрос хранится в поле `PluginsActivity.query`. SearchID его не меняет, а только читает.
 
-и обращается к:
+`self.query` — временная копия нормализованного значения, нужная для работы второго хука. Она не является постоянным хранилищем и не переживает завершение `fillItems()`.
 
-```python
-self.plugin.searching
-self.plugin.query
-```
+### Хранение hook handles
 
-Это также позволяет корректно сбросить состояние при выгрузке.
+В `self.hooks` хранятся объекты `XC_MethodHook.Unhook`, возвращённые `self.hook_method()`.
 
----
+Это не названия методов и не экземпляры `MethodHook`, а handles, необходимые для снятия конкретных зарегистрированных хуков.
 
-### 15. Регистр поиска
+### Синхронизация
 
-Запрос нормализуется:
+В SearchID нет `Lock`, `threading.local()` или другого механизма синхронизации. `searching` и `query` — общие поля экземпляра плагина.
 
-```python
-str(query).strip().lower()
-```
+Текущая логика рассчитана на последовательный сценарий: `fillItems()` устанавливает состояние, затем внутри его выполнения вызываются `getName()`, после чего `fillItems()` очищает состояние.
 
-и ID также приводится к нижнему регистру:
+При вложенных или параллельных вызовах `fillItems()` общий флаг и строка могут быть перезаписаны. Это ограничение текущей реализации; отдельная защита от такой ситуации в плагине не предусмотрена.
 
-```python
-str(plugin_id).lower()
-```
+### Постоянные настройки и кэш
 
-Поэтому поиск не зависит от регистра — `SearchID`, `searchid` и `SEARCHID` эквивалентны.
+Плагин не использует:
 
-`strip()` дополнительно убирает пробелы по краям запроса.
+- `get_setting()` / `set_setting()`;
+- файлы настроек;
+- базы данных;
+- кэш;
+- сетевую синхронизацию.
 
 ---
 
-### 16. Поиск по вхождению
+## 10. UI и взаимодействие с пользователем
 
-ID не сравнивается через:
+Отдельного UI у SearchID нет. Пользователь продолжает использовать штатный экран менеджера плагинов и его поисковое поле.
+
+Изменяется только результат вызова `Plugin.getName()` во время обработки списка. Плагин не создаёт собственные строки интерфейса и не вызывает обновление адаптера самостоятельно.
+
+### Bulletin при ошибках
+
+Для ошибок используется:
 
 ```python
-query == plugin_id
+BulletinHelper.show_with_button(
+    message,
+    jclass("org.telegram.messenger.R").raw.error,
+    "Copy",
+    on_click=lambda: copy_to_clipboard(trace),
+)
 ```
 
-Вместо этого используется:
+Параметры:
 
-```python
-query in plugin_id
-```
+- `message` — короткое сообщение об ошибке;
+- `R.raw.error` — Lottie-иконка ошибки;
+- `"Copy"` — подпись кнопки;
+- `on_click` — копирование полного traceback.
 
-Поэтому можно искать как полный ID:
-
-```text
-cactuslib_mini
-```
-
-так и его часть:
-
-```text
-cactus
-```
-
-Применяется та же семантика `contains`, которую уже использует штатный поиск ExteraGram по названию.
+Реализация `show_with_button()` в SDK формирует Bulletin и передаёт задачу в `run_on_ui_thread()`. Поэтому самостоятельно вызывать `run_on_ui_thread()` вокруг этого метода не требуется.
 
 ---
 
-### 17. Обработка ошибок
+## 11. Потоки и асинхронность
 
-Для ошибок хуков используется отдельная функция:
+В коде SearchID нет собственных потоков, executor, очередей, таймеров или сетевых задач.
 
-```python
-def _show_error(message, exc):
-    ...
-```
+Хуки выполняют небольшую синхронную работу в потоке, в котором вызывается перехваченный Java-метод. Плагин не переключает `fillItems()` или `getName()` на другой поток.
 
-Она формирует полный traceback:
+Показ Bulletin отличается: `BulletinHelper.show_with_button()` передаёт создание и показ уведомления в `run_on_ui_thread()`. Это необходимо, поскольку работа с Android UI должна выполняться в UI-thread.
+
+Кнопка `Copy` вызывает `copy_to_clipboard(trace)`. SDK обращается к Android Clipboard API; при успешном копировании дополнительно показывает Bulletin о копировании.
+
+---
+
+## 12. Сеть, файлы и внешние зависимости
+
+### Сетевые запросы
+
+Не используются.
+
+SearchID не отправляет поисковые запросы, ID плагинов, сообщения или другие данные на внешние серверы.
+
+### Файлы и хранилище
+
+Плагин не читает и не записывает пользовательские файлы. Постоянное хранилище не используется.
+
+### Импорты и зависимости
+
+| Импорт | Назначение |
+|---|---|
+| `traceback` | Формирование полного traceback |
+| `java.jclass` | Получение Java-класса `R` |
+| `BasePlugin` | Базовый класс плагина и lifecycle |
+| `MethodHook` | Реализация before/after callbacks |
+| `android_utils.copy_to_clipboard` | Копирование traceback |
+| `android_utils.log` | Запись диагностического сообщения |
+| `hook_utils.find_class` | Поиск классов приложения |
+| `hook_utils.get_private_field` | Чтение приватного поля `query` |
+| `ui.bulletin.BulletinHelper` | Показ сообщения об ошибке с кнопкой `Copy` |
+
+Все импорты относятся к стандартному Python runtime или Plugin SDK ExteraGram. В `__requirements__` нет сторонних pip-зависимостей.
+
+---
+
+## 13. Нативный код и бинарные ресурсы
+
+Собственных `.so`, DEX, JAR, Base64-бинарников или shader-файлов в плагине нет.
+
+Используемый `R.raw.error` — ресурс самого приложения ExteraGram, а не встроенный бинарный файл SearchID. В публичном дереве ETG присутствует `TMessagesProj/src/main/res/raw/error.json`.
+
+---
+
+## 14. Ошибки, диагностика и логи
+
+### Стратегия обработки ошибок
+
+| Участок | Что может пойти не так | Реакция плагина |
+|---|---|---|
+| `find_class()` | Класс не найден или не загружается | SDK пишет сообщение в log и возвращает `None`; SearchID прекращает регистрацию |
+| Получение reflector / методов | У класса нет ожидаемого reflector или имя метода не найдено | Исключение попадает в `on_plugin_load()`; вызывается cleanup и `_show_error()` |
+| `hook_method()` | Xposed не смог установить хук | SDK пишет ошибку и возвращает `None`; SearchID выбрасывает `RuntimeError` |
+| Чтение `query` | Поле отсутствует или Reflection завершилась ошибкой | SDK helper возвращает `None`; SearchID использует пустой запрос |
+| Обработка `getName()` | Ошибка получения ID или результата | `_show_error()` записывает traceback и показывает Bulletin |
+| Снятие хуков | `unhook_method()` завершился ошибкой | Ошибка записывается в log; handle остаётся в `self.hooks` |
+| Показ Bulletin | Ошибка возникла при вызове helper | Синхронное исключение логируется отдельным сообщением |
+
+### Формирование traceback
 
 ```python
 trace = "".join(
     traceback.format_exception(
         type(exc),
         exc,
-        exc.__traceback__
+        exc.__traceback__,
     )
 )
 ```
 
-и позволяет скопировать его через Bulletin.
+Traceback записывается через `android_utils.log()` и передаётся callback кнопки `Copy`.
 
-Основная логика хука защищена `try/except`, чтобы исключение при обработке одного плагина не ломало весь список.
+### Логирование
+
+В текущей версии используется:
+
+```python
+from android_utils import copy_to_clipboard, log
+```
+
+Функция `android_utils.log()` существует в SDK, но в документации помечена как legacy: она пишет сообщения на уровне debug и не даёт отдельного фильтруемого тега `plugin.SearchID`.
+
+Новый SDK logger через `self.logger` предпочтительнее для новых реализаций. Здесь используется модульная функция, потому что `_show_error()` находится на уровне модуля и не получает экземпляр `SearchIDPlugin`.
+
+### Bulletin и копирование
+
+`show_with_button()` принимает текст, resource ID, подпись кнопки и callback. Реализация SDK создаёт Bulletin на UI-thread.
+
+При нажатии `Copy` вызывается `copy_to_clipboard(trace)`. В SDK эта функция вызывает `AndroidUtilities.addToClipboard(text)`, а при успешном копировании показывает отдельное уведомление `show_copied_to_clipboard()`.
+
+Обёртка `try/except` в `_show_error()` ловит ошибку, если сам вызов `show_with_button()` завершился исключением до возврата. Поскольку создание Bulletin планируется через UI-thread helper, исключение, возникшее уже внутри отложенной UI-задачи, не обязательно попадёт в этот внешний `except`.
 
 ---
 
-## Полная схема работы
+## 15. Lifecycle и очистка ресурсов
+
+### `__init__`
+
+```python
+def __init__(self):
+    super().__init__()
+    self.hooks = []
+    self.searching = False
+    self.query = ""
+```
+
+Создаётся базовый экземпляр `BasePlugin`, пустой список handles и начальное состояние поиска.
+
+### `on_plugin_load`
+
+Порядок действий:
+
+1. Находит `PluginsActivity`.
+2. Находит `Plugin`.
+3. Получает reflector и список методов `fillItems`.
+4. Получает список методов `getName`.
+5. Проверяет, что оба списка не пустые.
+6. Устанавливает хук `fillItems` с priority `100`.
+7. Сохраняет его handle в `self.hooks`.
+8. Устанавливает хук `getName` с priority `5`.
+9. Сохраняет второй handle.
+
+Если любой этап завершается исключением, выполняется `_unhook_all()`, затем показывается сообщение об ошибке.
+
+### Во время работы
+
+Постоянно активны два хука. `searching` и `query` заполняются только вокруг выполнения `fillItems()` и очищаются в after callback.
+
+### `on_plugin_unload`
+
+```python
+def on_plugin_unload(self):
+    self._unhook_all()
+    self.searching = False
+    self.query = ""
+```
+
+При выгрузке:
+
+- выполняется попытка снять все сохранённые хуки;
+- ошибки снятия отдельных хуков не прекращают очистку остальных;
+- handles, которые не удалось снять, остаются в `self.hooks`;
+- состояние поиска сбрасывается.
+
+SDK дополнительно хранит hook handles в `PluginsController`. SearchID вызывает ручной `unhook_method()` для явной очистки и сохраняет не снятые handles для повторной попытки при следующем cleanup.
+
+### Частичная инициализация
+
+Если первый хук установился, а второй нет, первый уже находится в `self.hooks`. Общий обработчик ошибки вызывает `_unhook_all()` и пытается снять зарегистрированный хук.
+
+Это предотвращает обычный сценарий, когда ошибка второго `hook_method()` оставляет первый хук без попытки очистки.
+
+---
+
+## 16. Совместимость и различия версий
+
+### Метаданные 1.0.2
+
+```python
+__version__ = "1.0.2"
+__app_version__ = ">=13.2.2"
+```
+
+`__app_version__` — актуальное поле метаданных SDK для требования к версии приложения. Документация также указывает, что старое `__min_version__` принимается как legacy alias для `__app_version__ = ">=..."`.
+
+В плагине не указано `__sdk_version__`, поэтому загрузчик не получает отдельное ограничение минимальной версии SDK из метаданных SearchID.
+
+### Отличия от 1.0.1
+
+| Участок | 1.0.1 | 1.0.2 |
+|---|---|---|
+| Версия | `1.0.1` | `1.0.2` |
+| Минимальная версия приложения | `__min_version__ = "12.5.1"` | `__app_version__ = ">=13.2.2"` |
+| Логирование ошибок | Только Bulletin | Добавлен `android_utils.log()` с traceback |
+| Ошибка показа Bulletin | Полностью игнорировалась | Записывается отдельная ошибка в log |
+| Ошибка чтения запроса | Сбрасывался `searching` | Сбрасываются `searching` и `query` |
+| Приведение ID к строке | Выполнялось внутри `str()` в условии | Выполняется явно перед сравнением |
+| Проверка класса | Проверка через truthiness | Проверка `is None` |
+| Проверка метода | Проверка списка и длины | Проверка пустого списка |
+| Регистрация `fillItems` | Был fallback на `hook_all_methods()` | Используется только найденный первый метод и `hook_method()` |
+| Частичная регистрация | Не было общего отката | При ошибке вызывается `_unhook_all()` |
+| Снятие хуков | Цикл с пустым `except` и очистка списка | Централизованный `_unhook_all()`, обратный порядок, логирование ошибки, сохранение не снятых handles |
+| Поиск по ID | Подстрока без учёта регистра | Семантика поиска сохранена |
+
+Основное поведение поиска не менялось: `fillItems` сохраняет запрос, `getName` проверяет ID, при совпадении возвращает `Название ID`.
+
+### Особенности совместимости
+
+- Пакет `com.exteragram.messenger...` привязывает реализацию к ExteraGram.
+- Приватное поле `query` и внутренняя реализация методов могут меняться между версиями приложения.
+- `__app_version__` задаёт нижнюю границу, но не проверяет наличие нужных Java-методов.
+- `_chaquopy_reflector` — внутренняя деталь Python/Java interop, а не публичный helper из `hook_utils`.
+- Для последующих крупных обновлений ExteraGram нужно повторно проверять имена классов, методов, поле `query` и порядок элементов, возвращаемых `getMethods()`.
+
+---
+
+## 17. Производительность и использование ресурсов
+
+Плагин добавляет два метода-перехватчика:
+
+- один вызов до и один после `fillItems()`;
+- дополнительную проверку на каждом вызове `Plugin.getName()`, пока установлен хук.
+
+В обработчике `getName()` выполняется несколько простых операций: проверка двух полей состояния, получение ID, получение оригинального результата, преобразование ID в строку и сравнение подстроки.
+
+Reflection выполняется при загрузке плагина, а не для каждого элемента списка. Сетевой активности, файловых операций, декодирования изображений, больших буферов и собственного кэша нет.
+
+Фактические замеры времени или памяти в исходнике отсутствуют. Код не содержит отдельного механизма измерения производительности.
+
+---
+
+## 18. Безопасность и приватность
+
+Плагин взаимодействует только с локальным менеджером плагинов и его объектами.
+
+Он читает:
+
+- поисковый запрос из `PluginsActivity`;
+- имя и ID объектов `Plugin`.
+
+Он не читает сообщения, контакты, данные аккаунтов, содержимое чатов или токены. Никакие данные не отправляются на сервер.
+
+### Поверхности риска
+
+1. **Reflection к приватному полю.** `query` может быть переименовано или удалено в новой версии клиента. В этом случае SDK helper вернёт `None`, а поиск по ID не сработает.
+2. **Reflection к внутренним методам.** `fillItems` и `getName` — внутренняя реализация клиента, их имена и набор перегрузок могут измениться.
+3. **Изменение результата метода.** Во время `fillItems()` другие потребители `getName()` также могут получить строку с добавленным ID. Изменение не записывается в объект плагина постоянно.
+4. **Логи.** Traceback может содержать имена классов, методов и пути выполнения. Плагин не добавляет в лог содержимое сообщений или данные аккаунта.
+5. **Callback копирования.** По нажатию кнопки пользователь сам инициирует копирование traceback в буфер обмена.
+
+Для SearchID не требуется серверная авторизация, хранение секретов, файловые разрешения или отдельная защита сетевых запросов.
+
+---
+
+## 19. Паттерны, которые можно переиспользовать
+
+### 19.1. Расширение штатного поиска через getter
+
+**Когда применять:** когда штатный фильтр уже использует строковое поле или getter, а нужно добавить ещё один поисковый атрибут без создания собственного списка.
+
+**Реализация в SearchID:**
+
+1. Найти метод, внутри которого строится список и вызывается getter.
+2. Получить условие поиска до запуска этого метода.
+3. Перехватить getter после оригинального вызова.
+4. При совпадении вернуть составное значение, включающее дополнительный атрибут.
+5. Сбросить контекст поиска после завершения основного метода.
+
+**Почему полезно:** плагин повторно использует штатную фильтрацию и не копирует внутреннюю структуру UI.
+
+**Ограничения:** нужно убедиться, что getter действительно используется нужным фильтром. Возвращаемое значение может одновременно использоваться для отображения, сортировки или других операций.
+
+### 19.2. Ограничение действия общего хука контекстным флагом
+
+**Когда применять:** если метод перехватывается глобально, но модификация нужна только во время одного конкретного сценария.
+
+**Реализация в SearchID:**
+
+```python
+if not self.plugin.searching or not self.plugin.query:
+    return
+```
+
+Флаг и запрос устанавливаются в before-хуке метода-обёртки и сбрасываются в after-хуке.
+
+**Ограничения:** общий флаг подходит для последовательного синхронного сценария. Для вложенных или конкурентных вызовов потребуется отдельное состояние на вызов или другой контекстный механизм.
+
+### 19.3. Чтение приватного поля через SDK helper
+
+**Когда применять:** если необходимое состояние находится в private-поле Java-объекта и публичного getter нет.
+
+**Реализация в SearchID:**
+
+```python
+query = get_private_field(param.thisObject, "query")
+```
+
+**Почему полезно:** helper проходит по иерархии классов, получает declared field, вызывает `setAccessible(True)` и читает значение.
+
+**Ограничения:** это хрупкая интеграция. Helper возвращает `None`, если поле отсутствует или чтение завершилось ошибкой; вызывающий код должен учитывать это. Имя поля может измениться после обновления клиента или обфускации.
+
+### 19.4. Сохранение handles и откат частичной регистрации
+
+**Когда применять:** когда плагин устанавливает несколько независимых хуков, и загрузка считается успешной только после регистрации всех необходимых точек.
+
+**Реализация в SearchID:**
+
+- каждый handle после успешной регистрации сразу добавляется в список;
+- при последующей ошибке вызывается общий cleanup;
+- handles снимаются в обратном порядке;
+- не снятые handles не теряются, а остаются в списке;
+- ошибки cleanup записываются в log.
+
+**Почему полезно:** это предотвращает оставление части функциональности активной после неудачной инициализации.
+
+**Ограничения:** cleanup должен быть повторно вызываемым, а ошибки снятия не должны незаметно удалять handle из списка.
+
+### 19.5. Копируемая диагностика через Bulletin
+
+**Когда применять:** когда пользователю нужно сообщить об ошибке и одновременно дать возможность отправить разработчику полный traceback.
+
+**Реализация в SearchID:**
+
+- собрать traceback;
+- записать его в log;
+- показать короткое сообщение через `BulletinHelper.show_with_button()`;
+- назначить callback кнопке `Copy`;
+- скопировать traceback через `copy_to_clipboard()`.
+
+**Ограничения:** не помещать токены, пароли или приватные данные в traceback и текст Bulletin. `show_with_button()` уже переключает создание уведомления на UI-thread.
+
+### 19.6. Проверка результата регистрации перед сохранением
+
+**Когда применять:** для API, которое возвращает handle или `None` при неудачной регистрации.
+
+**Реализация в SearchID:**
+
+```python
+fill_hook = self.hook_method(
+    fill_methods[0],
+    FillItemsHook(self),
+    priority=100,
+)
+if fill_hook is None:
+    raise RuntimeError("Не удалось установить хук PluginsActivity.fillItems")
+
+self.hooks.append(fill_hook)
+```
+
+Handle добавляется в список только после успешной регистрации. Такой порядок не позволяет хранить `None` вместо реального объекта снятия хука.
+
+---
+
+## 20. Полная схема работы плагина
 
 ```text
 on_plugin_load()
     │
-    ├── find PluginsActivity
-    ├── find Plugin
+    ├── find_class(PluginsActivity)
+    ├── find_class(Plugin)
     │
-    ├── получить fillItems()
-    ├── получить Plugin.getName()
+    ├── получить reflector PluginsActivity
+    ├── получить reflector Plugin
     │
-    ├── hook fillItems()
-    │       │
-    │       └── fallback → hook_all_methods()
+    ├── получить fillItems
+    ├── получить getName
     │
-    └── hook Plugin.getName()
-            │
-            ▼
-Пользователь вводит текст
-            │
-            ▼
-PluginsActivity.query
-            │
-            ▼
-fillItems.before
-            │
-            ├── searching = True
-            └── query = query.lower()
-            │
-            ▼
-Plugin.getName()
-            │
-            ├── получить name
-            ├── получить id
-            │
-            └── query in id?
-                    │
-             ┌──────┴──────┐
-             │             │
-            нет            да
-             │             │
-          обычный      "name id"
-           name             │
-             │              │
-             └──────┬───────┘
-                    ▼
-             штатный фильтр
+    ├── hook_method(fillItems, FillItemsHook, priority=100)
+    │       └── сохранить handle
+    │
+    ├── hook_method(getName, GetNameHook, priority=5)
+    │       └── сохранить handle
+    │
+    └── при ошибке:
+            ├── _unhook_all()
+            └── _show_error()
                     │
                     ▼
-             список результатов
-                    │
-                    ▼
-             fillItems.after
-                    │
-                    ├── searching = False
-                    └── query = ""
-```
-
----
-
-## Что изменяется в ExteraGram
-
-Плагин не заменяет менеджер плагинов и не реализует собственный поиск.
-
-Вмешательство ограничено двумя точками:
-
-```text
+Пользователь вводит поисковый запрос
+    │
+    ▼
 PluginsActivity.fillItems()
+    │
+    ├── before:
+    │       ├── searching = True
+    │       ├── прочитать поле query
+    │       └── сохранить strip().lower()
+    │
+    ▼
+Оригинальная логика fillItems()
+    │
+    ▼
 Plugin.getName()
+    │
+    ├── оригинальный getName() возвращает имя
+    │
+    └── after:
+            ├── проверить searching
+            ├── проверить непустой query
+            ├── получить getId()
+            ├── получить оригинальный результат
+            └── если query содержится в ID:
+                    └── param.setResult("Имя ID")
+    │
+    ▼
+Штатная обработка списка плагинов
+    │
+    ▼
+fillItems() завершён
+    │
+    └── after:
+            ├── searching = False
+            └── query = ""
+    │
+    ▼
+on_plugin_unload()
+    │
+    ├── снять сохранённые handles в обратном порядке
+    ├── сохранить handles, которые не удалось снять
+    ├── searching = False
+    └── query = ""
 ```
-
-- На первом этапе плагин узнаёт, выполняется ли сейчас поиск и какой запрос используется.
-- На втором — временно расширяет имя плагина его ID.
-
-Штатная логика ExteraGram продолжает отвечать за:
-
-- построение списка;
-- фильтрацию;
-- отображение;
-- сортировку;
-- создание `UItem`;
-- обновление списка.
-
-Добавляется только дополнительный источник совпадения — `Plugin.getId()`.
-
----
-
-## Итог
-
-Главная идея SearchID — не переписывать существующий поиск ExteraGram, а использовать его собственную логику.
-
-Плагин перехватывает `fillItems()`, сохраняет текущий `query`, а во время его выполнения перехватывает `Plugin.getName()`.
-
-Если запрос находится в ID плагина, возвращается:
-
-```text
-Название ID
-```
-
-вместо обычного:
-
-```text
-Название
-```
-
-Штатный фильтр ExteraGram воспринимает это как обычное совпадение по имени и оставляет нужный плагин в списке.
-
-За счёт этого поиск по ID добавляется с минимальным вмешательством в существующий код приложения и без необходимости воспроизводить внутреннюю архитектуру `PluginsActivity`.
