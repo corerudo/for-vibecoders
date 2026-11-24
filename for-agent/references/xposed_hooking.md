@@ -1,14 +1,16 @@
 # Xposed Method Hooking
 
-Hook Java methods and constructors from Python plugins using `MethodHook`, `MethodReplacement`, `BaseHook`, and filters.
+Hook Java methods and constructors from Python plugins using `MethodHook`, `MethodReplacement`, `BaseHook`, filters, and partial instruction hooks.
 
-Xposed-style method hooking lets a plugin intercept method calls inside the app, modify arguments, inspect/replace return values, or skip the original implementation entirely. This is powerful and easy to misuse — be explicit about which style you use.
+Xposed-style method hooking lets a plugin intercept method calls inside the app, modify arguments, inspect/replace return values, or skip the original implementation entirely.
+
+---
 
 ## Hook Handler Styles
 
 ### 1. `MethodHook`
 
-Use when you want `before_hooked_method(...)` and/or `after_hooked_method(...)`.
+Use when you want `before_hooked_method(...)` and/or `after_hooked_method(...)`:
 
 ```python
 from base_plugin import MethodHook
@@ -17,15 +19,15 @@ from base_plugin import MethodHook
 class TitleLoggerHook(MethodHook):
     def before_hooked_method(self, param):
         title = param.args[0]
-        print(f"ActionBar title is about to become: {title}")
+        self.logger.info("ActionBar title is about to become: %s", title)
 
     def after_hooked_method(self, param):
-        print(f"Method finished with result: {param.getResult()}")
+        self.logger.info("Method finished with result: %s", param.getResult())
 ```
 
 ### 2. `MethodReplacement`
 
-Use to fully replace the original Java method.
+Use to fully replace the original Java method:
 
 ```python
 from base_plugin import MethodReplacement
@@ -33,277 +35,134 @@ from base_plugin import MethodReplacement
 
 class TitleReplacer(MethodReplacement):
     def replace_hooked_method(self, param):
-        print("Original method was replaced.")
+        self.logger.info("Original method replaced.")
         return None
 ```
 
-Your `replace_hooked_method(...)` becomes the whole implementation. Return: `None` for void, Python `bool`/`int`/`float` for primitive Java returns, or a compatible Java/Python object for reference returns.
+Return: `None` for void, Python `bool`/`int`/`float` for primitive Java returns, or a compatible Java/Python object for reference returns.
 
-### 3. Functional hooks / `BaseHook`
+### 3. Functional Hooks / `BaseHook`
 
-For simpler cases, skip a full class and pass `before=`/`after=` directly:
+For simpler cases, pass callbacks directly:
 
 ```python
 self.hook_method(
     some_method,
-    before=lambda param: self.log("Method is about to run!"),
-    after=lambda param: self.log(f"Method finished with result: {param.getResult()}"),
+    before=lambda param: self.logger.debug("Method about to run!"),
+    after=lambda param: self.logger.debug("Method result: %s", param.getResult()),
 )
 ```
 
-Internally the SDK wraps this into `BaseHook`, a small helper subclass of `MethodHook`.
+---
 
 ## The `param` Object
 
-All hook callbacks receive `de.robv.android.xposed.XC_MethodHook.MethodHookParam`. Most useful members:
+Callbacks receive `de.robv.android.xposed.XC_MethodHook.MethodHookParam`:
 
-- `param.thisObject` — instance the method was called on, or `None` for static methods
-- `param.args` — method argument array; readable and writable
-- `param.method` — the hooked `Method` or `Constructor`
-- `param.getResult()` — return value of the original method, available after execution
-- `param.setResult(value)` — sets a result manually
+- `param.thisObject` — instance the method was called on (`None` for static methods).
+- `param.args` — list-like collection of method arguments. Mutable before method runs (`param.args[0] = new_value`).
+- `param.getResult()` — returned value (valid in `after_hooked_method`).
+- `param.setResult(new_result)` — replace the return value (skips original Java execution if called in `before_hooked_method`).
+- `param.hasThrowable()` / `param.getThrowable()` — whether an exception occurred.
+- `param.setThrowable(exception)` — override/suppress exception.
 
-Calling `param.setResult(...)` inside `before_hooked_method(...)` skips the original method:
+---
 
+## Registering Hooks on `BasePlugin`
+
+### Single Method / Constructor:
 ```python
-def before_hooked_method(self, param):
-    if param.args[0] == "blocked":
-        param.setResult(None)
+unhook = self.hook_method(java_method, hook_handler, priority=10)
 ```
 
-## Filters
+### All Overloads:
+```python
+unhooks = self.hook_all_methods(java_class, "methodName", hook_handler)
+```
 
-Filters decide whether a hook callback runs at all. Two styles: `@hook_filters(...)` on class-based hook methods, or `before_filters=[...]`/`after_filters=[...]` for functional hooks.
+### All Constructors:
+```python
+unhooks = self.hook_all_constructors(java_class, hook_handler)
+```
+
+### Unhooking:
+Registered hooks are automatically unhooked when the plugin unloads. To unhook manually:
+```python
+self.unhook_method(unhook)
+```
+
+---
+
+## Partial Hooking (Instruction-Level Interception)
+
+In newer SDK builds (1.4.6.x), plugins can hook specific instructions inside a method body without replacing the entire method:
+
+### 1. `hook_call_site`
+Intercepts an internal method invocation (`callee`) occurring inside `in_method`:
+```python
+def on_call(chain):
+    # chain is PartialChain
+    self.logger.info("Target called with args: %s", chain.args)
+    return chain.proceed(*chain.args)
+
+handle = self.hook_call_site(in_method, callee_method, on_call)
+```
+
+### 2. `hook_field_read` / `hook_field_write`
+Intercepts field accesses inside a specific method:
+```python
+handle = self.hook_field_read(in_method, target_field, lambda chain: chain.proceed())
+handle = self.hook_field_write(in_method, target_field, lambda chain: chain.proceed(modified_val))
+```
+
+### 3. `hook_string_constant`
+Intercepts when a specific string literal is loaded inside `in_method`:
+```python
+handle = self.hook_string_constant(in_method, "Old Text", lambda chain: "New Text")
+```
+
+### 4. `hook_return_value`
+Inspects or modifies the return value right before the method returns:
+```python
+handle = self.hook_return_value(in_method, lambda chain: modify(chain.proceed()))
+```
+
+### `PartialChain` Helper
+In partial hook callbacks, `chain` provides:
+- `chain.this_object` — the caller object instance.
+- `chain.args` — list of arguments passed to the hooked operation.
+- `chain.arg(index)` — specific argument.
+- `chain.proceed(*args)` — execute the original operation with optional replacement args.
+- `chain.throw_to_caller(throwable)` — throw an exception back to the caller.
+
+Unhooking partial hooks:
+```python
+self.unhook_partial(handle)
+```
+
+---
+
+## Hook Filters
+
+Filters let you avoid running Python code if conditions aren't met:
 
 ```python
 from base_plugin import HookFilter
 
-self.hook_method(
-    some_method,
-    before=lambda p: self.log("Arg 0 is null!"),
-    before_filters=[HookFilter.ArgumentIsNull(0)],
-)
+# Only execute if result was not null:
+self.hook_method(method, before=..., before_filters=[HookFilter.RESULT_NOT_NULL])
+
+# Only execute if argument 0 equals a specific value:
+self.hook_method(method, before=..., before_filters=[HookFilter.ArgumentEqual(0, "target")])
 ```
 
-Available `HookFilter` helpers: `RESULT_IS_NULL`, `RESULT_IS_TRUE`, `RESULT_IS_FALSE`, `RESULT_NOT_NULL`, `ResultIsInstanceOf(clazz)`, `ResultEqual(value)`, `ResultNotEqual(value)`, `ArgumentIsNull(index)`, `ArgumentNotNull(index)`, `ArgumentIsFalse(index)`, `ArgumentIsTrue(index)`, `ArgumentIsInstanceOf(index, clazz)`, `ArgumentEqual(index, value)`, `ArgumentNotEqual(index, value)`, `Condition(condition, object=None)`, `Or(*filters)`.
-
-### Class-based filter example
-
-```python
-from base_plugin import HookFilter, MethodHook, hook_filters
-
-
-class ExampleHook(MethodHook):
-    @hook_filters(HookFilter.ArgumentIsNull(0))
-    def before_hooked_method(self, param):
-        ...
-
-    @hook_filters(HookFilter.RESULT_NOT_NULL)
-    def after_hooked_method(self, param):
-        ...
-```
-
-### MVEL condition filter example
-
-```python
-from base_plugin import HookFilter, MethodHook, hook_filters
-
-
-class ConditionalHook(MethodHook):
-    @hook_filters(
-        HookFilter.Condition(
-            "param.args[0] == object || this instanceof android.view.View",
-            object=500,
-        )
-    )
-    def before_hooked_method(self, param):
-        ...
-```
-
-## The Hooking Process
-
-### 1. Find the target method or constructor
-
-Start with `find_class(...)` (from `hook_utils`), then use Java reflection on the returned `Class`.
-
-```python
-from hook_utils import find_class
-
-ActionBarClass = find_class("org.telegram.ui.ActionBar.ActionBar")
-if not ActionBarClass:
-    self.log("ActionBar class not found!")
-    return
-
-# Example method: public void setTitle(CharSequence title)
-CharSequenceClass = find_class("java.lang.CharSequence")
-set_title_method = ActionBarClass.getDeclaredMethod("setTitle", CharSequenceClass)
-set_title_method.setAccessible(True)
-
-# Example constructor: public ActionBar(Context context)
-ContextClass = find_class("android.content.Context")
-action_bar_constructor = ActionBarClass.getDeclaredConstructor(ContextClass)
-action_bar_constructor.setAccessible(True)
-```
-
-**Do not call `getClass()` on the `Class` object** — `find_class(...)` already returns a Java `Class`. Call `getDeclaredMethod(...)`/`getDeclaredConstructor(...)` directly on it.
-
-### 2. Implement the hook handler
-
-```python
-from base_plugin import MethodHook, MethodReplacement
-
-
-class TitleLoggerHook(MethodHook):
-    def __init__(self, plugin):
-        self.plugin = plugin
-
-    def before_hooked_method(self, param):
-        title = param.args[0]
-        self.plugin.log(f"ActionBar title is being set to: {title}")
-        param.args[0] = f"[Hooked] {title}"
-
-    def after_hooked_method(self, param):
-        self.plugin.log("ActionBar title has been set.")
-
-
-class TitleReplacer(MethodReplacement):
-    def __init__(self, plugin):
-        self.plugin = plugin
-
-    def replace_hooked_method(self, param):
-        self.plugin.log("ActionBar.setTitle() was replaced.")
-        return None
-```
-
-### 3. Apply the hook
-
-```python
-ActionBarClass = find_class("org.telegram.ui.ActionBar.ActionBar")
-CharSequenceClass = find_class("java.lang.CharSequence")
-
-set_title_method = ActionBarClass.getDeclaredMethod("setTitle", CharSequenceClass)
-set_title_method.setAccessible(True)
-
-handler_instance = TitleLoggerHook(self)
-self.unhook_obj = self.hook_method(set_title_method, handler_instance, priority=10)
-
-if self.unhook_obj:
-    self.log("Successfully hooked ActionBar.setTitle()")
-```
-
-Hooks are removed automatically when the plugin unloads, but can also be unhooked manually.
-
-### 4. Hook all methods or all constructors
-
-```python
-MyViewClass = find_class("com.example.MyCustomView")
-unhook_list = self.hook_all_methods(MyViewClass, "onMeasure", TitleLoggerHook(self))
-
-if unhook_list:
-    self.log(f"Successfully hooked {len(unhook_list)} onMeasure overload(s).")
-```
-
-```python
-SomeClass = find_class("com.example.SomeClass")
-constructor_unhooks = self.hook_all_constructors(SomeClass, TitleLoggerHook(self))
-```
-
-### 5. Manual unhooking
-
-```python
-if self.unhook_obj:
-    self.unhook_method(self.unhook_obj)
-    self.unhook_obj = None
-```
-
-If `hook_all_methods(...)`/`hook_all_constructors(...)` were used, iterate the returned list and unhook each item.
-
-## Practical Examples
-
-### Example 1: modify arguments before the call
-
-```python
-from base_plugin import MethodHook
-from hook_utils import find_class
-from java import jint
-
-
-class ToastHook(MethodHook):
-    def before_hooked_method(self, param):
-        # Method signature: makeText(Context context, CharSequence text, int duration)
-        original_text = param.args[1]
-        param.args[1] = f"(Plugin) {original_text}"
-
-
-ToastClass = find_class("android.widget.Toast")
-ContextClass = find_class("android.content.Context")
-CharSequenceClass = find_class("java.lang.CharSequence")
-
-make_text_method = ToastClass.getDeclaredMethod("makeText", ContextClass, CharSequenceClass, jint)
-self.hook_method(make_text_method, ToastHook())
-```
-
-### Example 2: change the return value after the call
-
-```python
-from base_plugin import MethodHook
-from hook_utils import find_class
-
-
-class BuildVarsHook(MethodHook):
-    def __init__(self, plugin):
-        self.plugin = plugin
-
-    def after_hooked_method(self, param):
-        original_result = param.getResult()
-        self.plugin.log(f"Original result: {original_result}")
-        param.setResult(False)
-
-
-BuildVarsClass = find_class("org.telegram.messenger.BuildVars")
-is_main_app_method = BuildVarsClass.getDeclaredMethod("isMainApp")
-self.hook_method(is_main_app_method, BuildVarsHook(self))
-```
-
-### Example 3: skip the original call in `before_hooked_method`
-
-```python
-from base_plugin import MethodHook
-from hook_utils import find_class
-from java.lang import Boolean, Long
-
-
-class FormatFileSizeHook(MethodHook):
-    def before_hooked_method(self, param):
-        size = param.args[0]
-
-        if size < 1024:
-            param.setResult(f"{size} bytes (edited)")
-
-
-AndroidUtilitiesClass = find_class("org.telegram.messenger.AndroidUtilities")
-format_file_size_method = AndroidUtilitiesClass.getDeclaredMethod(
-    "formatFileSize", Long.TYPE, Boolean.TYPE, Boolean.TYPE,
-)
-self.hook_method(format_file_size_method, FormatFileSizeHook())
-```
-
-### Example 4: fully replace a method
-
-```python
-from java.lang import String as JString
-
-from base_plugin import MethodReplacement
-from hook_utils import find_class
-
-
-class NoOpLogger(MethodReplacement):
-    def replace_hooked_method(self, param):
-        # Original method is never called.
-        return None
-
-
-FileLogClass = find_class("org.telegram.messenger.FileLog")
-log_method = FileLogClass.getDeclaredMethod("d", JString)
-self.hook_method(log_method, NoOpLogger())
-```
+Supported filters:
+- `HookFilter.RESULT_IS_NULL` / `RESULT_NOT_NULL`
+- `HookFilter.RESULT_IS_TRUE` / `RESULT_IS_FALSE`
+- `HookFilter.ResultIsInstanceOf(Class)`
+- `HookFilter.ResultEqual(value)` / `ResultNotEqual(value)`
+- `HookFilter.ArgumentIsNull(index)` / `ArgumentNotNull(index)`
+- `HookFilter.ArgumentEqual(index, value)` / `ArgumentNotEqual(index, value)`
+- `HookFilter.ArgumentIsInstanceOf(index, Class)`
+- `HookFilter.Condition(mvel_expression)`
+- `HookFilter.Or(*filters)`

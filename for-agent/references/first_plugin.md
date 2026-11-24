@@ -15,8 +15,9 @@ __description__ = "My first exteraGram plugin"
 __author__ = "Your Name"
 __version__ = "1.0.0"
 __icon__ = "exteraPlugins/1"
-__app_version__ = ">=12.8.1"
-__sdk_version__ = ">=1.4.3.10"
+__category__ = "tools"
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.4.3"
 
 
 class HelloWorldPlugin(BasePlugin):
@@ -37,8 +38,9 @@ __description__ = "Rewrites .hello commands into a friendly message"
 __author__ = "Your Name"
 __version__ = "1.0.0"
 __icon__ = "exteraPlugins/1"
-__app_version__ = ">=12.8.1"
-__sdk_version__ = ">=1.4.3.10"
+__category__ = "tools"
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.4.3"
 
 
 DEFAULT_TEMPLATE = "Hello, {name}!"
@@ -48,7 +50,7 @@ class HelloWorldPlugin(BasePlugin):
     def on_plugin_load(self):
         # Register the outgoing-message hook once when the plugin is loaded.
         self.add_on_send_message_hook()
-        self.log("Hello World plugin loaded")
+        self.logger.info("Hello World plugin loaded")
 
     def create_settings(self) -> List[Any]:
         return [
@@ -99,10 +101,11 @@ class HelloWorldPlugin(BasePlugin):
 
 ## What this example teaches
 
-1. **Metadata is parsed statically.** The loader reads metadata from the Python file with AST, so values such as `__id__` and `__version__` should stay as plain top-level constants.
+1. **Metadata is parsed statically.** The loader reads metadata from the Python file with AST, so values such as `__id__`, `__category__`, and `__version__` should stay as plain top-level constants.
 2. **Hooks must be registered.** Implementing `on_send_message_hook(...)` is not enough by itself — you also need `self.add_on_send_message_hook()` inside `on_plugin_load`.
 3. **Settings are regular Python dataclasses**, built from objects in `ui.settings`. `Header` creates a section title, `Input` persists a string under a key, `Text` is a read-only helper row.
 4. **`HookResult` decides what happens next.** For outgoing messages: `HookResult()` = leave unchanged; `HookResult(strategy=HookStrategy.MODIFY, params=params)` = use updated params; `HookResult(strategy=HookStrategy.CANCEL)` = stop the send entirely.
+5. **Logging:** Use `self.logger.info(...)` which logs to Android logcat with tag `plugin.hello_world`. Filter using `adb logcat -s plugin.hello_world`.
 
 ## Testing it
 
@@ -117,3 +120,4 @@ class HelloWorldPlugin(BasePlugin):
 - Building metadata dynamically instead of using plain constants.
 - Assuming `params.message` always exists (it doesn't for media-only sends).
 - Doing slow network or file work directly in a hook on the UI thread — use `run_on_queue(...)` instead (see `client_utils.md`).
+- Forgetting multi-account scoping when replying to updates or sending messages in hooks (see `multi_account.md`).

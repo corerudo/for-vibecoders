@@ -1,6 +1,6 @@
 # Plugin Class
 
-Plugin metadata, lifecycle hooks, menu items, and request/update interception.
+Plugin metadata, lifecycle hooks, menu items, logger, multi-account handling, and request/update interception.
 
 ## Metadata
 
@@ -13,27 +13,35 @@ __description__ = "Modifies specific URLs for better previews"
 __author__ = "@immat0x1"
 __version__ = "1.0.0"
 __icon__ = "exteraPlugins/1"
-__app_version__ = ">=12.8.1"
-__sdk_version__ = ">=1.4.3.10"
+__category__ = ["chats", "tools"]
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.4.3"
 __requirements__ = ["mpmath", "tinydb"]
 ```
 
-Supported metadata keys: `__id__`, `__name__`, `__description__`, `__author__`, `__version__`, `__icon__`, `__app_version__`, `__sdk_version__`, `__requirements__`.
+Supported metadata keys:
+- `__id__` (required): 2–32 characters, starts with a letter, latin letters, digits, `_`, or `-`. Matches filename `<__id__>.py`.
+- `__name__` (required): Human-readable plugin name.
+- `__description__`: Summary of what the plugin does (supports basic markdown in UI).
+- `__author__`: Author name or Telegram handle (`@yourUsername`).
+- `__version__`: Version string (defaults to `"1.0"` if omitted).
+- `__icon__`: Format `StickerPackShortName/index`, e.g. `"exteraPlugins/1"`.
+- `__category__`: Plugin catalog category. Use a single string or a list of up to three strings:
+  - `"appearance"`: Themes, Monet, interface tweaks, icons, and layout changes.
+  - `"chats"`: Messages, chat lists, folders, and conversation features.
+  - `"media"`: Photos, videos, music, voice messages, and stickers.
+  - `"privacy"`: Privacy, ghost mode, security, and hiding information.
+  - `"tools"`: Productivity helpers, automation, and utilities.
+  - `"integrations"`: AI, translators, and external services.
+  - `"fun"`: Games, jokes, and entertainment.
+  - `"libraries"`: Shared code that other plugins depend on.
+- `__app_version__`: Target app version requirement (e.g. `">=12.5.1"`). Supports `>=`, `<=`, `==`, `>`, `<`.
+- `__sdk_version__`: Required minimum plugin SDK version (e.g. `">=1.4.4.3"`).
+- `__requirements__`: List of pure-Python PyPI packages installed automatically (see `pip_dependencies.md`).
 
 Legacy compatibility: `__min_version__` is still accepted, treated as `__app_version__ = ">=..."`.
 
-Important details:
-- `__id__` and `__name__` are the only truly required fields.
-- `__id__` must be 2–32 characters, start with a letter, and contain only latin letters, digits, `_`, or `-`.
-- `__requirements__` is a list of packages to install through PIP (pure-Python only — see `pip_dependencies.md`).
-- `__description__` supports basic markdown rendering in the UI.
-- `__author__` may be plain text or a Telegram-style handle such as `@yourUsername`.
-- `__version__` defaults to `1.0` if omitted.
-- `__icon__` uses the format `StickerPackShortName/index`, e.g. `exteraPlugins/1`.
-- `__app_version__` supports operators `>=`, `<=`, `==`, `>`, `<`.
-- `__sdk_version__` lets you require a minimum plugin SDK version.
-
-This SDK targets the `1.4.3.10` API surface and expects `exteraGram 12.8.1+`.
+**SDK Baseline:** Targets the current `1.4.4.3+` / `1.4.6.x` API surface and expects `exteraGram 12.5.1+` (with intents on `12.6.4+`).
 
 ## Basic Structure
 
@@ -44,6 +52,9 @@ from base_plugin import BasePlugin
 
 __id__ = "weather"
 __name__ = "Weather"
+__category__ = "tools"
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.4.3"
 
 
 class WeatherPlugin(BasePlugin):
@@ -73,7 +84,7 @@ Full settings UI system: see `plugin_settings.md`.
 
 ## Plugin Events
 
-### Load and unload
+### Load and Unload
 
 ```python
 from base_plugin import BasePlugin
@@ -81,17 +92,18 @@ from base_plugin import BasePlugin
 
 class DebugPlugin(BasePlugin):
     def on_plugin_load(self):
-        # Good place to register hooks, listeners, or background tasks.
-        self.log("Plugin loaded!")
+        # Register hooks, listeners, intents, or background tasks
+        self.logger.info("Plugin loaded!")
 
     def on_plugin_unload(self):
-        # Good place for cleanup that is not handled automatically.
-        self.log("Plugin unloaded!")
+        # Cleanup that is not handled automatically
+        self.logger.info("Plugin unloaded!")
 ```
 
-`on_plugin_load` runs when the plugin is enabled or restored during app startup. `on_plugin_unload` runs when the plugin is disabled or the app is shutting down.
+- `on_plugin_load` runs when the plugin is enabled or restored during app startup.
+- `on_plugin_unload` runs when the plugin is disabled or the app is shutting down.
 
-### Application events
+### Application Events
 
 ```python
 from base_plugin import AppEvent, BasePlugin
@@ -100,16 +112,38 @@ from base_plugin import AppEvent, BasePlugin
 class DebugPlugin(BasePlugin):
     def on_app_event(self, event_type: AppEvent):
         if event_type == AppEvent.START:
-            self.log("App is starting")
+            self.logger.info("App is starting")
         elif event_type == AppEvent.STOP:
-            self.log("App is stopping")
+            self.logger.info("App is stopping")
         elif event_type == AppEvent.PAUSE:
-            self.log("App moved to background")
+            self.logger.info("App moved to background")
         elif event_type == AppEvent.RESUME:
-            self.log("App returned to foreground")
+            self.logger.info("App returned to foreground")
 ```
 
 `AppEvent` values: `START`, `STOP`, `PAUSE`, `RESUME`.
+
+## Logging
+
+`self.logger` writes to Android logcat under the tag `plugin.<id>` with levels, origin trace, and object dumps:
+
+```python
+self.logger.debug("Hook installed for %s", class_name)
+
+try:
+    self.process(update)
+except Exception:
+    self.logger.exception("Failed to process update")
+
+self.logger.dump(message.messageOwner)
+```
+
+Filter logs:
+```bash
+adb logcat -s plugin.<id>
+```
+
+See `logging.md` for complete details.
 
 ## Settings Storage Helpers
 
@@ -129,7 +163,7 @@ self.import_settings(backup, reload_settings=False)
 
 ## Menu Items
 
-Add menu entries to several app menus through `MenuItemData`.
+Add menu entries to app menus through `MenuItemData`.
 
 ```python
 from typing import Any, Dict
@@ -160,74 +194,57 @@ class MyMenuPlugin(BasePlugin):
         )
 
     def handle_message_click(self, context: Dict[str, Any]):
-        self.log(f"Message menu item clicked. Context keys: {list(context.keys())}")
+        self.logger.info("Message menu item clicked. Context keys: %s", list(context.keys()))
 
         message = context.get("message")
         if message:
-            self.log(f"Clicked on message ID: {message.getId()}")
-            self.log(f"Message text: {message.messageText}")
+            self.logger.info("Clicked message ID: %s, text: %s", message.getId(), message.messageText)
 
     def handle_profile_click(self, context: Dict[str, Any]):
-        self.log(f"Profile menu item clicked. Context keys: {list(context.keys())}")
+        self.logger.info("Profile menu item clicked. Context keys: %s", list(context.keys()))
 
         user = context.get("user")
         if user:
-            self.log(f"Profile opened for user: {user.first_name} (ID: {user.id})")
+            self.logger.info("Profile opened for: %s (ID: %s)", user.first_name, user.id)
 ```
 
-### `MenuItemData` fields
-
-- `menu_type: MenuItemType` — required target menu
-- `text: str` — required visible title
-- `on_click: Callable[[Dict[str, Any]], None]` — required click handler
-- `item_id: Optional[str]` — optional stable id if you want to remove the item later
-- `icon: Optional[str]` — drawable name, e.g. `"msg_info"`
-- `subtext: Optional[str]` — secondary line below the title
-- `condition: Optional[str]` — MVEL expression controlling visibility
-- `priority: int` — larger values usually appear earlier
+### `MenuItemData` Fields
+- `menu_type: MenuItemType` — required target menu.
+- `text: str` — required visible title.
+- `on_click: Callable[[Dict[str, Any]], None]` — required click handler.
+- `on_long_click: Optional[Callable[[Dict[str, Any]], None]]` — optional long click handler.
+- `item_id: Optional[str]` — optional stable id if you want to remove the item later.
+- `icon: Optional[str]` — drawable name, e.g. `"msg_info"`.
+- `subtext: Optional[str]` — secondary line below the title.
+- `condition: Optional[str]` — MVEL expression controlling visibility.
+- `priority: int` — larger values appear earlier.
 
 ### `MenuItemType`
+- `MenuItemType.MESSAGE_CONTEXT_MENU` — context menu on long-pressing a message.
+- `MenuItemType.DRAWER_MENU` — side navigation drawer.
+- `MenuItemType.MAIN_MENU` — main three-dot menu.
+- `MenuItemType.CHAT_ACTION_MENU` — action bar menu inside a chat.
+- `MenuItemType.PROFILE_ACTION_MENU` — action menu on user/channel profile.
 
-`MESSAGE_CONTEXT_MENU`, `DRAWER_MENU`, `CHAT_ACTION_MENU`, `PROFILE_ACTION_MENU`.
-
-### The `on_click` context
-
-Common keys (exact set depends on menu type/screen): `account`, `context`, `fragment`, `dialog_id`, `user`, `userId`, `userFull`, `chat`, `chatId`, `chatFull`, `encryptedChat`, `message`, `groupedMessages`, `botInfo`.
-
-Inspect during development:
-
-```python
-def handle_click(self, context):
-    self.log(f"Available keys: {list(context.keys())}")
-```
-
-### Removing menu items
-
-Menu items are removed automatically when the plugin unloads, but you can remove one manually:
-
+### Removing Menu Items
+Removed automatically on plugin unload, or manually:
 ```python
 if self.message_item_id:
     self.remove_menu_item(self.message_item_id)
 ```
 
-## Event Hooks
+## Event Hooks & Multi-Account Scoping
 
 Event hooks let a plugin intercept Telegram requests, responses, updates, or outgoing message parameters.
 
 Register with:
 - `self.add_hook(name, match_substring=False, priority=0)`
 - `self.add_on_send_message_hook(priority=0)`
+- `self.add_intent_hook(info, type)` (see `intents.md`)
+- `self.add_file_hook(file_info)`
 
-```python
-class GhostModePlugin(BasePlugin):
-    def on_plugin_load(self):
-        self.add_hook("TL_messages_setTyping")
-        self.add_hook("TL_messages_setEncryptedTyping")
-        self.add_hook("TL_account_updateStatus")
-        self.add_on_send_message_hook()
-```
-
-Hook results are returned as `HookResult` with a `HookStrategy`.
+> [!IMPORTANT]
+> **Multi-Account Rule:** Every hook receives `account: int`. Because background accounts remain active, always use `self.client(account)` (or pass `account=account`) when performing actions or sending messages in response to a hook. See `multi_account.md`.
 
 ```python
 from typing import Any, List
@@ -245,10 +262,11 @@ class GhostModePlugin(BasePlugin):
             self.add_hook(req_name)
 
         self.add_hook("TL_account_updateStatus")
+        self.add_on_send_message_hook()
 
     def pre_request_hook(self, request_name: str, account: int, request: Any) -> HookResult:
         if request_name in TYPING_REQUESTS and self.get_setting("dont_send_typing", True):
-            self.log(f"Blocking request: {request_name}")
+            self.logger.debug("Blocking request: %s for account %s", request_name, account)
             return HookResult(strategy=HookStrategy.CANCEL)
 
         if request_name == "TL_account_updateStatus" and self.get_setting("force_offline", True):
@@ -259,7 +277,7 @@ class GhostModePlugin(BasePlugin):
 
     def post_request_hook(self, request_name: str, account: int, response: Any, error: Any) -> HookResult:
         if request_name == "TL_messages_sendMessage" and not error:
-            self.log("Successfully sent a message!")
+            self.logger.debug("Message successfully sent on account %s", account)
         return HookResult()
 
     def create_settings(self) -> List[Any]:
@@ -269,38 +287,29 @@ class GhostModePlugin(BasePlugin):
         ]
 ```
 
-### Hook strategies
+### Hook Strategies
+- `HookStrategy.DEFAULT` — leave unchanged (no-op).
+- `HookStrategy.CANCEL` — cancel the operation entirely.
+- `HookStrategy.MODIFY` — use the modified object.
+- `HookStrategy.MODIFY_FINAL` — modify and stop further plugins from processing this event.
 
-- `HookStrategy.DEFAULT` — do nothing special
-- `HookStrategy.CANCEL` — stop the operation
-- `HookStrategy.MODIFY` — return a modified object
-- `HookStrategy.MODIFY_FINAL` — return a modified object and stop further plugin processing for that event
-
-Depending on the hook type, the modified object should be assigned to `HookResult.request`, `.response`, `.update`, `.updates`, or `.params`.
-
-### Update hooks
-
+### Update Hooks
 ```python
 def on_update_hook(self, update_name: str, account: int, update: Any) -> HookResult:
     result = HookResult()
 
     if update_name == "TL_updateNewMessage":
-        self.log(f"Intercepted update: {update_name}")
+        client = self.client(account)
+        self.logger.debug("Received new message update on account %s", account)
 
     return result
 
 
 def on_updates_hook(self, container_name: str, account: int, updates: Any) -> HookResult:
-    result = HookResult()
-
-    if container_name == "TL_updates":
-        self.log(f"Received updates container: {container_name}")
-
-    return result
+    return HookResult()
 ```
 
-### Outgoing message hook
-
+### Outgoing Message Hook
 ```python
 def on_send_message_hook(self, account: int, params: Any) -> HookResult:
     result = HookResult()
@@ -314,6 +323,5 @@ def on_send_message_hook(self, account: int, params: Any) -> HookResult:
     return result
 ```
 
-## Xposed Method Hooking
-
-For low-level Java method hooking through LSPosed/Xposed-style APIs, see `xposed_hooking.md`.
+## Low-Level Java Method Hooking
+For hooking Java methods and constructors directly via bytecode/Xposed hooking, see `xposed_hooking.md`.

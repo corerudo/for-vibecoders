@@ -2,27 +2,35 @@
 
 ## Setup
 
-### Install a recent app build
+### Install a compatible app build
 
-Use a recent build of exteraGram with plugin support enabled; treat `exteraGram 12.8.1+` as the practical minimum for this SDK tree. Test builds are usually published in the beta channel (`t.me/exteraGramCI`).
+Use a build of exteraGram or AyuGram with plugin support enabled; treat `exteraGram 12.5.1+` as the practical baseline for this SDK (with `intents` requiring `12.6.4+`). Test builds are published in the official beta channel (`t.me/exteraGramCI`).
 
 ### Enable the plugin engine
 
-`exteraGram Preferences` > `Plugins` → enable the plugin engine. Then open the plugin info screen and enable developer mode.
+`exteraGram Preferences` > `Plugins` → enable the plugin engine. Then open the plugin info screen and toggle **Developer Mode** on.
 
 ### Create a local project
 
-A simple layout is enough:
-
+For single-file plugins:
 ```
 my-plugin/
 `-- hello_world.py
 ```
 
+For multi-file structured Elyx plugins (see `elyx.md`):
+```
+my-plugin/
+|-- refmap.yml
+|-- metainfo.yml
+|-- main.py
+`-- src/
+```
+
 Desktop-development tips:
-- Keep the filename stable; the least surprising setup is `filename == __id__ + ".py"`.
-- Point your IDE at this repository's `src/` directory for imports and autocomplete.
-- Keep metadata as plain top-level constants so the loader can parse them.
+- Keep the filename matching `__id__ + ".py"`.
+- Point your IDE's Python analysis paths to this repository's `stubs/` directory for full typing, autocompletion, and signatures.
+- Keep metadata as plain top-level constants in `.py` (or in `metainfo.yml` for Elyx).
 
 Minimal starter file:
 
@@ -35,30 +43,38 @@ __description__ = "My first exteraGram plugin"
 __author__ = "Your Name"
 __version__ = "1.0.0"
 __icon__ = "exteraPlugins/1"
-__app_version__ = ">=12.8.1"
-__sdk_version__ = ">=1.4.3.10"
+__category__ = "tools"
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.4.3"
 
 
 class HelloWorldPlugin(BasePlugin):
     pass
 ```
 
-### Connect to the device
+### Connect to the device & DevServer
 
-Connect the phone to the PC and make sure ADB is on `PATH`. Two common workflows:
-- Copy the `.py` file into the app's plugins directory and reload it manually.
-- Use custom tooling that talks to the built-in `DevServer` for write/reload/debug flows.
+Connect the phone to the PC via USB and ensure ADB is working:
+```bash
+adb devices
+adb forward tcp:42690 tcp:42690
+```
 
-On-device plugin files live under a path similar to:
+With `elyb dev` (see `elyx.md`) or custom tools talking to `DevServer` (see `dev_server.md`), you can push code and hot-reload plugins instantly without restarting the app.
 
+On-device plugin files live under:
 ```
 /data/user/0/com.exteragram.messenger/files/plugins/<plugin_id>.py
 ```
 
-**Debugging ports**: the built-in development server listens on `42690` by default; the debugger port is separate and chosen by you/your tooling (example below uses `5678`).
+### Remote debugging with `debugpy`
 
-VS Code remote attach example:
+Forward the debugger port:
+```bash
+adb forward tcp:5678 tcp:5678
+```
 
+VS Code `launch.json`:
 ```json
 {
     "version": "0.2.0",
@@ -73,7 +89,7 @@ VS Code remote attach example:
             },
             "pathMappings": [
                 {
-                    "localRoot": "/path/to/your/workspace",
+                    "localRoot": "${workspaceFolder}",
                     "remoteRoot": "/data/user/0/com.exteragram.messenger/files/plugins"
                 }
             ]
@@ -82,41 +98,37 @@ VS Code remote attach example:
 }
 ```
 
-Inside that remote directory, the plugin file should still match the plugin id, e.g. `hello_world.py`.
-
-### First pages to keep open
-
-Setup → First Plugin (`first_plugin.md`) → Plugin Class (`plugin_class.md`) → Plugin Settings (`plugin_settings.md`) → Client Utilities (`client_utils.md`).
-
 ### Main modules at a glance
 
-- `base_plugin` — metadata, lifecycle, event hooks, menu items, Xposed helpers
-- `android_utils` — UI thread helpers, listener wrappers, logging, clipboard
-- `client_utils` — requests, controllers, queues, sending/editing messages
-- `file_utils` — directories plus simple file I/O helpers
-- `hook_utils` — reflection helpers for classes and private fields
-- `ui.*` — dialogs, bulletins, settings
-- `extera_utils.*` — class proxy DSL, text formatting helpers, metadata utilities
+- `base_plugin` — metadata, lifecycle, event hooks, menu items, Xposed helpers, partial hooks (`hook_call_site`, `hook_field_read`, `hook_field_write`, etc.).
+- `client_utils` — requests, multi-account helpers (`AccountClient`, `self.client(account)`), queues, sending/editing messages.
+- `intents` — `IntentsManager` for handling custom schemes, `t.me` links, and Android intents.
+- `log_utils` — `self.logger` (`Logger`), `LogLevel`, dumps, timers, logcat tags `plugin.<id>`.
+- `dev_server` — internal development server on `127.0.0.1:42690` for reload and live synchronization.
+- `elyx` (`elyxcore`) — multi-file plugin framework (`strings`, `assets`, `settings`, `refmap`).
+- `android_utils` — UI thread helpers, listener wrappers, clipboard.
+- `file_utils` — directories and file I/O helpers.
+- `hook_utils` — reflection helpers for classes, methods, constructors, and fields.
+- `ui.*` — dialogs, bulletins, settings UI.
+- `extera_utils.*` — class proxy DSL, text formatting helpers, metadata utilities.
 
 ---
 
 ## Common Telegram Source Classes
 
-It's recommended to have a local copy of Telegram sources open in Android Studio when doing deep hooking work.
-
 | Class | Path | Notes |
 |---|---|---|
-| `LaunchActivity` | `TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java` | App initialization happens here; custom links are handled here too. |
+| `LaunchActivity` | `TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java` | App initialization; custom links and intent dispatching. |
 | `ProfileActivity` | `TMessagesProj/src/main/java/org/telegram/ui/ProfileActivity.java` | User and channel profile fragment. |
 | `ChatActivity` | `TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java` | Chat rendering and functionality. |
-| `MessageObject` | `TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java` | Wrapper for `TLRPC.Message`. |
-| `ChatMessageCell` | `TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java` | Handles message rendering. |
-| `AndroidUtilities` | `TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java` | Contains many useful utilities. |
-| `MessagesController` | `TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java` | Methods related to managing app state and Telegram requests. |
-| `MessagesStorage` | `TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java` | Manages local database state; `database` field for custom SQLite queries. |
-| `SendMessagesHelper` | `TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java` | Methods for sending all kinds of messages, including files. |
-| `BulletinFactory` | `TMessagesProj/src/main/java/org/telegram/ui/Components/BulletinFactory.java` | Small notification messages shown at the bottom. |
-| `AlertDialog` | `TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java` | Alert dialogs shown on top of the current fragment; support custom action-button handlers. |
-| `TLRPC` (all Telegram request models) | `TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java` and `TMessagesProj/src/main/java/org/telegram/tgnet/tl/` | Human-readable schema reference (not always up to date): https://corefork.telegram.org/schema |
+| `MessageObject` | `TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java` | High-level wrapper for `TLRPC.Message`. |
+| `ChatMessageCell` | `TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java` | Handles message bubble rendering. |
+| `AndroidUtilities` | `TMessagesProj/src/main/java/org/telegram/messenger/AndroidUtilities.java` | Core utilities (dp conversion, screen dimensions, formatters). |
+| `MessagesController` | `TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java` | Managing chats, users, dialogs, and caching. |
+| `MessagesStorage` | `TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java` | Manages local SQLite database state (`getDatabase()`). |
+| `SendMessagesHelper` | `TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java` | Methods for sending messages and media. |
+| `BulletinFactory` | `TMessagesProj/src/main/java/org/telegram/ui/Components/BulletinFactory.java` | Bottom notification popups. |
+| `AlertDialog` | `TMessagesProj/src/main/java/org/telegram/ui/ActionBar/AlertDialog.java` | Alert dialogs shown over current fragment. |
+| `TLRPC` | `TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java` | Schema types, requests, and updates: https://corefork.telegram.org/schema |
 
 GitHub source root: https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/
