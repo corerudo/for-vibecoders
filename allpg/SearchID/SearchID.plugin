@@ -10,7 +10,7 @@ from ui.bulletin import BulletinHelper
 __id__ = "SearchID"
 __name__ = "SearchID"
 __description__ = "Теперь можно искать плагины и по их ID"
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 __author__ = "@jxbplug"
 __icon__ = "DendziDzheksJaxbastard/4"
 __app_version__ = ">=13.2.2"
@@ -109,25 +109,20 @@ class SearchIDPlugin(BasePlugin):
             if activity_class is None or plugin_class is None:
                 raise RuntimeError("Не найден класс менеджера плагинов или Plugin")
 
-            activity_reflector = activity_class._chaquopy_reflector
             plugin_reflector = plugin_class._chaquopy_reflector
-
-            fill_methods = activity_reflector.getMethods("fillItems")
-            if not fill_methods:
-                raise RuntimeError("Не найден PluginsActivity.fillItems")
-
             get_name_methods = plugin_reflector.getMethods("getName")
             if not get_name_methods:
                 raise RuntimeError("Не найден Plugin.getName")
 
-            fill_hook = self.hook_method(
-                fill_methods[0],
+            fill_hooks = self.hook_all_methods(
+                activity_class,
+                "fillItems",
                 FillItemsHook(self),
                 priority=100,
             )
-            if fill_hook is None:
-                raise RuntimeError("Не удалось установить хук PluginsActivity.fillItems")
-            self.hooks.append(fill_hook)
+            if not fill_hooks:
+                raise RuntimeError("Не удалось установить хуки PluginsActivity.fillItems")
+            self.hooks.extend(fill_hooks)
 
             name_hook = self.hook_method(
                 get_name_methods[0],
