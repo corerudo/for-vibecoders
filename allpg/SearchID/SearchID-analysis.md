@@ -2,7 +2,7 @@
 
 > **Назначение:** добавляет поиск плагинов ExteraGram по ID через штатный поиск менеджера плагинов.
 >
-> **Версия плагина:** 1.0.2
+> **Версия плагина:** 1.0.3
 
 ---
 
@@ -224,7 +224,7 @@ after_hooked_method
 
 | Класс | Метод / поле | Использование в SearchID | Доступ |
 |---|---|---|---|
-| `com.exteragram.messenger.plugins.ui.PluginsActivity` | `fillItems` | Точка входа для получения текущего запроса и граница, внутри которой действует флаг поиска | Метод находится через Reflection |
+| `com.exteragram.messenger.plugins.ui.PluginsActivity` | все методы `fillItems` | Точка входа для получения текущего запроса и граница, внутри которой действует флаг поиска | Устанавливаются через `hook_all_methods()` по имени метода |
 | `com.exteragram.messenger.plugins.ui.PluginsActivity` | `query` | Приватное поле с поисковым запросом | Читается через `get_private_field()` |
 | `com.exteragram.messenger.plugins.Plugin` | `getName` | Метод, результат которого временно изменяется | Метод находится через Reflection |
 | `com.exteragram.messenger.plugins.Plugin` | `getId` | Получение ID экземпляра плагина | Вызывается через `param.thisObject` |
@@ -234,30 +234,25 @@ after_hooked_method
 
 **Назначение в плагине:** получить активный поисковый запрос до обработки списка и сбросить состояние после её окончания.
 
-**Получение метода:**
-
-```python
-activity_class = find_class(
-    "com.exteragram.messenger.plugins.ui.PluginsActivity"
-)
-
-activity_reflector = activity_class._chaquopy_reflector
-fill_methods = activity_reflector.getMethods("fillItems")
-```
-
 **Регистрация:**
 
 ```python
-fill_hook = self.hook_method(
-    fill_methods[0],
+fill_hooks = self.hook_all_methods(
+    activity_class,
+    "fillItems",
     FillItemsHook(self),
     priority=100,
 )
+if not fill_hooks:
+    raise RuntimeError("Не удалось установить хуки PluginsActivity.fillItems")
+self.hooks.extend(fill_hooks)
 ```
 
-Плагин берёт первый элемент результата `getMethods("fillItems")`. Он не выбирает перегрузку по типам аргументов и не проверяет сигнатуру отдельно.
+Плагин больше не получает отдельный `Method` через Chaquopy reflector и не выбирает `fill_methods[0]`. SDK/Xposed устанавливает хук на все методы класса `PluginsActivity` с именем `fillItems`. Это охватывает перегрузки с таким именем, не завися от порядка, в котором Reflection вернул методы.
 
-Точную Java/Kotlin-сигнатуру `fillItems` здесь намеренно не указываю: декларацию класса из исходников приложения не удалось открыть. В самом плагине метод выбирается по имени через Chaquopy reflector, а возвращённый объект передаётся в `BasePlugin.hook_method()`.
+`hook_all_methods()` возвращает список отдельных `XC_MethodHook.Unhook`. Каждый handle добавляется в `self.hooks` отдельно через `extend()`, чтобы `_unhook_all()` мог снять их по одному.
+
+Точные Java/Kotlin-сигнатуры перегрузок здесь не перечисляются: анализируемый код выбирает их по имени и передаёт выбор SDK/Xposed.
 
 ### Поле `PluginsActivity.query`
 
@@ -325,8 +320,9 @@ jclass("org.telegram.messenger.R").raw.error
 
 - `PluginsActivity`, `Plugin`, `fillItems`, `query`, `getName` и `getId` — внутренние элементы приложения, а не независимый публичный API самого плагина.
 - Переименование класса, поля или метода может сломать Reflection.
-- Выбор `fill_methods[0]` и `get_name_methods[0]` зависит от порядка результата reflector. Если появятся перегрузки или изменится порядок методов, нужно повторно проверить, какой именно метод получает хук.
-- В текущем коде нет проверки типов параметров найденного метода.
+- `fillItems` перехватывается по имени через `hook_all_methods()`, поэтому хук устанавливается на все перегрузки этого метода в классе.
+- Для `getName` по-прежнему выбирается первый элемент `get_name_methods`; если у метода появятся перегрузки, нужно проверить порядок и выбранный `Member`.
+- Поведение нескольких перегрузок `fillItems`, если они вызывают друг друга, зависит от фактического потока вызовов клиента: каждый перехваченный вызов запускает свой before/after callback.
 - Минимальная версия `>=13.2.2` не гарантирует, что внутренние имена сохранятся во всех будущих сборках.
 
 ---
@@ -356,18 +352,15 @@ plugin_class = find_class(
 ### Получение методов через Chaquopy reflector
 
 ```python
-activity_reflector = activity_class._chaquopy_reflector
 plugin_reflector = plugin_class._chaquopy_reflector
-
-fill_methods = activity_reflector.getMethods("fillItems")
 get_name_methods = plugin_reflector.getMethods("getName")
 ```
 
-Здесь используется `_chaquopy_reflector`, а не прямой вызов `getDeclaredMethod()` на объекте класса.
+Chaquopy reflector теперь используется только для получения `Plugin.getName`, поскольку `hook_method()` принимает конкретный Java `Member`.
 
-Документация SDK показывает обычный путь через `find_class()` и Java Reflection (`getDeclaredMethod()`), а `BasePlugin.hook_method()` в исходниках принимает объект типа `java.lang.reflect.Member`. SearchID использует Chaquopy reflector для получения метода, после чего передаёт первый найденный элемент в `hook_method()`.
+Для `PluginsActivity.fillItems` reflector больше не используется: класс передаётся непосредственно в `hook_all_methods(activity_class, "fillItems", ...)`, а поиск методов по имени выполняет Xposed API внутри SDK.
 
-`_chaquopy_reflector` — внутренний механизм Chaquopy-обёртки, а не отдельный публичный helper из `hook_utils.py`. Его нельзя описывать как универсальный API ExteraGram для новых плагинов без повторной проверки. В SearchID этот способ сохранён, поскольку он используется текущей рабочей реализацией.
+`_chaquopy_reflector` — внутренний механизм Chaquopy-обёртки, а не отдельный публичный helper из `hook_utils.py`. В SearchID он остаётся только на участке `getName`, где нужен конкретный `Member` для `hook_method()`.
 
 ### Почему используется `MethodHook`
 
@@ -400,23 +393,35 @@ class GetNameHook(MethodHook):
 
 ### Регистрация
 
-`BasePlugin.hook_method()` в исходниках SDK:
+Для `PluginsActivity.fillItems` используется `BasePlugin.hook_all_methods()`:
 
-- принимает `java.lang.reflect.Member`;
+- принимает Java-класс, имя метода и обработчик;
 - создаёт Java callback для `MethodHook`;
-- вызывает `XposedBridge.hookMethod()`;
-- регистрирует полученный handle в `PluginsController`;
-- возвращает `XC_MethodHook.Unhook`;
-- возвращает `None`, если регистрация завершилась неудачно.
+- вызывает `XposedBridge.hookAllMethods()`;
+- регистрирует полученные handles в `PluginsController`;
+- возвращает список отдельных `XC_MethodHook.Unhook` либо `None`, если установить хуки не удалось.
 
-SearchID сохраняет каждый успешный handle отдельно:
+Для `Plugin.getName` используется `BasePlugin.hook_method()`:
+
+- принимает конкретный `java.lang.reflect.Member`;
+- вызывает `XposedBridge.hookMethod()`;
+- возвращает один `XC_MethodHook.Unhook` либо `None`.
+
+Регистрация `fillItems` в текущей версии:
 
 ```python
-self.hooks.append(fill_hook)
-self.hooks.append(name_hook)
+fill_hooks = self.hook_all_methods(
+    activity_class,
+    "fillItems",
+    FillItemsHook(self),
+    priority=100,
+)
+if not fill_hooks:
+    raise RuntimeError("Не удалось установить хуки PluginsActivity.fillItems")
+self.hooks.extend(fill_hooks)
 ```
 
-Плагин не использует fallback на `hook_all_methods()`. Это соответствует текущему варианту 1.0.2: каждый из двух найденных методов регистрируется через `hook_method()` как отдельный Java `Member`.
+Здесь нет fallback: `hook_all_methods()` — основной и единственный способ регистрации `fillItems`. Handles из возвращённого списка сохраняются по одному. Хук `getName` затем регистрируется отдельно через `hook_method()` и добавляется через `append()`.
 
 ### Снятие хуков
 
@@ -537,26 +542,33 @@ SearchID не получает коллекцию установленных п�
 
 Важное следствие: во время активного `fillItems()` строку `Название ID` получает любой внутренний потребитель результата `getName()` в этом вызове, не только фильтр. Точное использование результата внутри конкретной реализации `PluginsActivity` зависит от кода клиента.
 
-### 8.5. Получение метода для хука
+### 8.5. Регистрация `fillItems` на все перегрузки
 
-**Задача:** передать SDK объект метода, который можно зарегистрировать через Xposed.
+**Задача:** не выбирать одну перегрузку вручную, а устанавливать хук на все методы `fillItems` класса `PluginsActivity`.
 
 ```python
-activity_reflector = activity_class._chaquopy_reflector
-fill_methods = activity_reflector.getMethods("fillItems")
+fill_hooks = self.hook_all_methods(
+    activity_class,
+    "fillItems",
+    FillItemsHook(self),
+    priority=100,
+)
+if not fill_hooks:
+    raise RuntimeError("Не удалось установить хуки PluginsActivity.fillItems")
+self.hooks.extend(fill_hooks)
 ```
 
-Далее используется `fill_methods[0]`. Если список пустой, плагин выбрасывает `RuntimeError`.
+SDK передаёт класс и имя метода в `XposedBridge.hookAllMethods()`. Результат — список handles, по одному на установленный хук. Плагин сохраняет каждый handle отдельно.
 
-Аналогично выбирается первый метод `getName()`.
+`Plugin.getName` по-прежнему находится через `plugin_class._chaquopy_reflector.getMethods("getName")`, после чего первый найденный `Member` передаётся в `hook_method()`.
 
-**Ограничение:** в плагине нет проверки количества методов или сигнатуры каждого найденного элемента. При изменении набора перегрузок этот участок нужно проверить повторно, а не предполагать, что первый элемент всегда останется нужным.
+**Практический эффект:** регистрация `fillItems` больше не зависит от `fill_methods[0]` и от успешной установки хука на один выбранный `Member`. Все перегрузки с этим именем получают один и тот же `FillItemsHook` с приоритетом `100`.
 
 ### 8.6. Частичная регистрация и откат
 
-**Задача:** не оставлять первый хук установленным, если второй хук зарегистрировать не удалось.
+**Задача:** не оставлять хуки `fillItems` установленными, если регистрация `getName` завершается ошибкой.
 
-После успешной регистрации `fillItems` его handle сразу добавляется в `self.hooks`. Если регистрация `getName` завершается ошибкой или возвращает `None`, выполнение попадает в общий `except`:
+После успешной регистрации `fillItems` все возвращённые handles сразу добавляются в `self.hooks` по одному через `extend()`. Если регистрация `getName` завершается ошибкой или возвращает `None`, выполнение попадает в общий `except`:
 
 ```python
 except Exception as exc:
@@ -564,7 +576,7 @@ except Exception as exc:
     _show_error("SearchID: ошибка загрузки", exc)
 ```
 
-`_unhook_all()` пытается снять все handles, которые уже были сохранены. Таким образом, сбой второй регистрации не оставляет первый хук без попытки очистки.
+`_unhook_all()` пытается снять все handles, которые уже были сохранены. Таким образом, сбой регистрации `getName` не оставляет ранее установленные хуки `fillItems` без попытки очистки.
 
 Если снятие какого-либо хука тоже завершается ошибкой, его handle остаётся в списке для последующей попытки снятия при вызове cleanup.
 
@@ -586,17 +598,17 @@ except Exception as exc:
 
 ### Хранение hook handles
 
-В `self.hooks` хранятся объекты `XC_MethodHook.Unhook`, возвращённые `self.hook_method()`.
+В `self.hooks` хранятся отдельные объекты `XC_MethodHook.Unhook`: несколько handles, возвращённых `hook_all_methods()` для перегрузок `fillItems`, и один handle, возвращённый `hook_method()` для `getName`.
 
-Это не названия методов и не экземпляры `MethodHook`, а handles, необходимые для снятия конкретных зарегистрированных хуков.
+Это не названия методов и не экземпляры `MethodHook`, а handles, необходимые для снятия каждого зарегистрированного хука.
 
 ### Синхронизация
 
 В SearchID нет `Lock`, `threading.local()` или другого механизма синхронизации. `searching` и `query` — общие поля экземпляра плагина.
 
-Текущая логика рассчитана на последовательный сценарий: `fillItems()` устанавливает состояние, затем внутри его выполнения вызываются `getName()`, после чего `fillItems()` очищает состояние.
+Текущая логика рассчитана на последовательный сценарий: один из перехваченных методов `fillItems()` устанавливает состояние, затем внутри его выполнения вызываются `getName()`, после чего after-callback соответствующего `fillItems()` очищает состояние.
 
-При вложенных или параллельных вызовах `fillItems()` общий флаг и строка могут быть перезаписаны. Это ограничение текущей реализации; отдельная защита от такой ситуации в плагине не предусмотрена.
+Поскольку хук установлен на все перегрузки, важно учитывать возможные вложенные вызовы между перегрузками. Если один перехваченный `fillItems()` вызывает другой, after-callback внутреннего вызова может очистить общее состояние до завершения внешнего. В плагине нет отдельного счётчика глубины или стека контекста вызовов; это ограничение общей модели `searching`/`query`, а не ошибка регистрации handles.
 
 ### Постоянные настройки и кэш
 
@@ -760,19 +772,18 @@ def __init__(self):
 
 1. Находит `PluginsActivity`.
 2. Находит `Plugin`.
-3. Получает reflector и список методов `fillItems`.
-4. Получает список методов `getName`.
-5. Проверяет, что оба списка не пустые.
-6. Устанавливает хук `fillItems` с priority `100`.
-7. Сохраняет его handle в `self.hooks`.
-8. Устанавливает хук `getName` с priority `5`.
-9. Сохраняет второй handle.
+3. Получает через reflector список методов `getName`.
+4. Проверяет, что класс `Plugin` и список `getName` доступны.
+5. Вызывает `hook_all_methods()` для всех методов `PluginsActivity` с именем `fillItems` и приоритетом `100`.
+6. Проверяет, что SDK вернул непустой список handles, и добавляет каждый handle в `self.hooks`.
+7. Устанавливает хук `Plugin.getName` с приоритетом `5`.
+8. Сохраняет handle `getName` в `self.hooks`.
 
 Если любой этап завершается исключением, выполняется `_unhook_all()`, затем показывается сообщение об ошибке.
 
 ### Во время работы
 
-Постоянно активны два хука. `searching` и `query` заполняются только вокруг выполнения `fillItems()` и очищаются в after callback.
+Постоянно активны хук `getName` и хуки всех найденных перегрузок `fillItems`. `searching` и `query` заполняются только вокруг выполнения `fillItems()` и очищаются в after callback.
 
 ### `on_plugin_unload`
 
@@ -794,9 +805,9 @@ SDK дополнительно хранит hook handles в `PluginsController`.
 
 ### Частичная инициализация
 
-Если первый хук установился, а второй нет, первый уже находится в `self.hooks`. Общий обработчик ошибки вызывает `_unhook_all()` и пытается снять зарегистрированный хук.
+Если `hook_all_methods()` установил хуки для нескольких перегрузок, все возвращённые handles сразу сохраняются в `self.hooks`. Если последующая регистрация `getName` завершается ошибкой или возвращает `None`, общий обработчик ошибки вызывает `_unhook_all()` и пытается снять каждый ранее установленный handle.
 
-Это предотвращает обычный сценарий, когда ошибка второго `hook_method()` оставляет первый хук без попытки очистки.
+Это предотвращает оставление части хуков `fillItems` активной после неудачной регистрации `getName`.
 
 ---
 
@@ -825,7 +836,7 @@ __app_version__ = ">=13.2.2"
 | Приведение ID к строке | Выполнялось внутри `str()` в условии | Выполняется явно перед сравнением |
 | Проверка класса | Проверка через truthiness | Проверка `is None` |
 | Проверка метода | Проверка списка и длины | Проверка пустого списка |
-| Регистрация `fillItems` | Был fallback на `hook_all_methods()` | Используется только найденный первый метод и `hook_method()` |
+| Регистрация `fillItems` | Сначала `hook_method()` для первого найденного метода; при неудаче — `hook_all_methods()` | `hook_all_methods()` используется сразу как основной способ; все handles сохраняются отдельно |
 | Частичная регистрация | Не было общего отката | При ошибке вызывается `_unhook_all()` |
 | Снятие хуков | Цикл с пустым `except` и очистка списка | Централизованный `_unhook_all()`, обратный порядок, логирование ошибки, сохранение не снятых handles |
 | Поиск по ID | Подстрока без учёта регистра | Семантика поиска сохранена |
@@ -838,7 +849,8 @@ __app_version__ = ">=13.2.2"
 - Приватное поле `query` и внутренняя реализация методов могут меняться между версиями приложения.
 - `__app_version__` задаёт нижнюю границу, но не проверяет наличие нужных Java-методов.
 - `_chaquopy_reflector` — внутренняя деталь Python/Java interop, а не публичный helper из `hook_utils`.
-- Для последующих крупных обновлений ExteraGram нужно повторно проверять имена классов, методов, поле `query` и порядок элементов, возвращаемых `getMethods()`.
+- `hook_all_methods()` снижает зависимость от порядка Reflection и покрывает перегрузки `fillItems`, но при изменении имени метода или класса регистрация всё равно завершится неудачно.
+- Для `getName` по-прежнему важно проверять, что выбранный через `getMethods()[0]` метод соответствует ожидаемому методу без аргументов.
 
 ---
 
@@ -933,7 +945,9 @@ query = get_private_field(param.thisObject, "query")
 
 **Реализация в SearchID:**
 
-- каждый handle после успешной регистрации сразу добавляется в список;
+- `hook_all_methods()` возвращает список handles для `fillItems`;
+- каждый handle сразу добавляется в `self.hooks` через `extend()`;
+- handle `getName`, возвращённый `hook_method()`, добавляется через `append()`;
 - при последующей ошибке вызывается общий cleanup;
 - handles снимаются в обратном порядке;
 - не снятые handles не теряются, а остаются в списке;
@@ -957,25 +971,26 @@ query = get_private_field(param.thisObject, "query")
 
 **Ограничения:** не помещать токены, пароли или приватные данные в traceback и текст Bulletin. `show_with_button()` уже переключает создание уведомления на UI-thread.
 
-### 19.6. Проверка результата регистрации перед сохранением
+### 19.6. Сохранение handles, возвращаемых `hook_all_methods()`
 
-**Когда применять:** для API, которое возвращает handle или `None` при неудачной регистрации.
+**Когда применять:** когда нужно перехватить все перегрузки метода с одним именем и SDK возвращает несколько handles.
 
 **Реализация в SearchID:**
 
 ```python
-fill_hook = self.hook_method(
-    fill_methods[0],
+fill_hooks = self.hook_all_methods(
+    activity_class,
+    "fillItems",
     FillItemsHook(self),
     priority=100,
 )
-if fill_hook is None:
-    raise RuntimeError("Не удалось установить хук PluginsActivity.fillItems")
+if not fill_hooks:
+    raise RuntimeError("Не удалось установить хуки PluginsActivity.fillItems")
 
-self.hooks.append(fill_hook)
+self.hooks.extend(fill_hooks)
 ```
 
-Handle добавляется в список только после успешной регистрации. Такой порядок не позволяет хранить `None` вместо реального объекта снятия хука.
+Список проверяется до сохранения, а затем каждый handle добавляется в общий список отдельно. Это важно для корректной работы `_unhook_all()`, который вызывает `unhook_method()` для каждого handle, а не для вложенного списка.
 
 ---
 
@@ -987,14 +1002,11 @@ on_plugin_load()
     ├── find_class(PluginsActivity)
     ├── find_class(Plugin)
     │
-    ├── получить reflector PluginsActivity
     ├── получить reflector Plugin
-    │
-    ├── получить fillItems
     ├── получить getName
     │
-    ├── hook_method(fillItems, FillItemsHook, priority=100)
-    │       └── сохранить handle
+    ├── hook_all_methods(PluginsActivity, "fillItems", FillItemsHook, priority=100)
+    │       └── сохранить каждый handle отдельно
     │
     ├── hook_method(getName, GetNameHook, priority=5)
     │       └── сохранить handle
