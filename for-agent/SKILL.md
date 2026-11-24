@@ -1,13 +1,13 @@
 ---
 name: exteragram-plugin-sdk
-description: Use this skill whenever writing, editing, debugging, or explaining exteraGram Telegram plugins (Python plugins run inside the exteraGram Android app via its plugin engine / Chaquopy). Trigger this for any .py or .elyx file meant to be loaded as an exteraGram plugin, any mention of "exteraGram plugin", "BasePlugin", "Elyx", "userbot module" built on this SDK, hooking Telegram requests/updates/messages, building plugin settings screens, sending/editing Telegram messages from a plugin, multi-account handling, Xposed-style Java method hooking from Python, partial instruction hooking, or generating Java proxy classes from Python (class proxy / java_subclass). Always consult this skill before writing exteraGram plugin code, even for small or "quick" plugins — the metadata format, hook registration, multi-account scoping, and settings API have exact, easy-to-get-wrong requirements.
+description: Use this skill whenever writing, editing, debugging, or explaining exteraGram Telegram plugins (Python plugins run inside the exteraGram Android app via its plugin engine / Chaquopy). Trigger this for any .plugin or .elyx file meant to be loaded as an exteraGram plugin, any mention of "exteraGram plugin", "BasePlugin", "Elyx", "userbot module" built on this SDK, hooking Telegram requests/updates/messages, building plugin settings screens, sending/editing Telegram messages from a plugin, multi-account handling, Xposed-style Java method hooking from Python, partial instruction hooking, or generating Java proxy classes from Python (class proxy / java_subclass). Always consult this skill before writing exteraGram plugin code, even for small or "quick" plugins — the metadata format, hook registration, multi-account scoping, and settings API have exact, easy-to-get-wrong requirements.
 ---
 
 # exteraGram Plugin SDK
 
 Reference for building Python plugins for the **exteraGram** and **AyuGram** Telegram clients. Plugins run inside the app through a built-in plugin engine powered by Chaquopy (Python-Java interop) and support Xposed-style method hooking and instruction-level partial hooking.
 
-**Baseline for this SDK tree:** SDK version `1.4.4.3+` / `1.4.6.4-stable` / `1.4.6.5-beta`, Python `3.11`, minimum app version `exteraGram 12.5.1+` (with intents requiring `12.6.4+`).
+**Baseline for this SDK tree:** SDK version `1.4.4.3+` / `1.4.6.4-stable` / `1.4.6.5-beta`, Python `3.11`, minimum app version `exteraGram 12.5.1+`.
 
 Official Type Stubs (`.pyi`) are available in the repository under [`./stubs/`](../stubs/) for complete IDE typing and autocompletion.
 
